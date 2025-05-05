@@ -1,13 +1,17 @@
+mod handlers;
+
 use actix_web::{App, HttpServer};
-mod handlers; // Importing handler module
+use handlers::transcribe;
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    let listener = "127.0.0.1:8181";
+    println!("Starting Whisper API server on http://0.0.0.0:8080");
+    
     HttpServer::new(|| {
-        App::new().service(handlers::transcribe) // Registering the transcribe endpoint
+        App::new()
+            .service(transcribe)
     })
-    .bind(&listener)?
+    .bind("0.0.0.0:8080")?
     .run()
     .await
 }

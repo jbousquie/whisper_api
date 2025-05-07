@@ -1,6 +1,10 @@
 // Whisper.cpp commands
 // https://github.com/ggml-org/whisper.cpp?tab=readme-ov-file#quick-start
 
+// test command
+// curl -X POST "http://localhost:8080/transcribe" -F "language=fr" -F "file=@/home/jerome/Téléchargements/codir16k15m.wav"
+
+
 use actix_multipart::Multipart;
 use actix_web::{HttpResponse, Responder, post};
 use futures::{StreamExt, TryStreamExt};
@@ -79,7 +83,7 @@ async fn transcribe(mut form: Multipart) -> impl Responder {
                     }
                 }
             }
-            "audio" => {
+            "file" => {
                 // Generate a unique folder and filename for the audio file
                 let (dir_path, file_path) = match generate_unique_filename("whisper", "audio") {
                     Ok((folder, file)) => (folder, file),

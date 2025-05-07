@@ -10,8 +10,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use uuid::Uuid;
-const WHISPER_CMD: &str = "/home/jerome/whspr";
-const WHISPER_TMP_FILES: &str = "/home/jerome/scripts/rust/whisper_api/tmp_files";
+const WHISPER_CMD: &str = "/home/jerome/scripts/cpp/whisper.cpp/build/bin/whisper-cli";
+const WHISPER_TMP_FILES: &str = "/home/llm/tmp";
 
 // Generate a unique filename with UUID and create a subfolder for it
 fn generate_unique_filename(prefix: &str, extension: &str) -> Result<(PathBuf, PathBuf), std::io::Error> {

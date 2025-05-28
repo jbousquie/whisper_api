@@ -7,6 +7,11 @@ use handlers::{transcribe, transcription_result, transcription_status, HandlerCo
 use log::{info, warn};
 use queue_manager::{QueueManager, WhisperConfig};
 
+const DEFAULT_WHISPER_API_HOST: &str = "127.0.0.1";
+const DEFAULT_WHISPER_API_PORT: &str = "8181";
+const DEFAULT_WHISPER_API_TIMEOUT: u64 = 480;
+const DEFAULT_WHISPER_API_KEEPALIVE: u64 = 480;
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     // Initialize logger
@@ -28,19 +33,21 @@ async fn main() -> std::io::Result<()> {
     let queue_manager = QueueManager::new(whisper_config);
 
     // Server settings
-    let host = std::env::var("WHISPER_API_HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
-    let port = std::env::var("WHISPER_API_PORT").unwrap_or_else(|_| "8080".to_string());
+    let host =
+        std::env::var("WHISPER_API_HOST").unwrap_or_else(|_| DEFAULT_WHISPER_API_HOST.to_string());
+    let port =
+        std::env::var("WHISPER_API_PORT").unwrap_or_else(|_| DEFAULT_WHISPER_API_PORT.to_string());
     let timeout = std::time::Duration::from_secs(
         std::env::var("WHISPER_API_TIMEOUT")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(480),
+            .unwrap_or(DEFAULT_WHISPER_API_TIMEOUT),
     );
     let keep_alive = std::time::Duration::from_secs(
         std::env::var("WHISPER_API_KEEPALIVE")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(480),
+            .unwrap_or(DEFAULT_WHISPER_API_KEEPALIVE),
     );
 
     info!("Starting Whisper API server on http://{}:{}", host, port);

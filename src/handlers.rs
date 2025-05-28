@@ -17,6 +17,10 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
+const DEFAULT_WHISPER_TMP_FILES: &str = "/tmp/whisper_api";
+const DEFAULT_WHISPER_LANGUAGES: &str = "fr";
+const DEFAULT_WHISPER_MODEL: &str = "large-v3";
+
 /// Configuration for the Whisper API handlers
 #[derive(Clone, Debug)]
 pub struct HandlerConfig {
@@ -28,7 +32,7 @@ impl Default for HandlerConfig {
     fn default() -> Self {
         Self {
             temp_dir: std::env::var("WHISPER_TMP_FILES")
-                .unwrap_or_else(|_| String::from("/tmp/whisper_api")),
+                .unwrap_or_else(|_| String::from(DEFAULT_WHISPER_TMP_FILES)),
         }
     }
 }
@@ -88,8 +92,8 @@ pub async fn transcribe(
     config: web::Data<HandlerConfig>,
 ) -> impl Responder {
     // Default values
-    let mut language = String::from("fr");
-    let mut model = String::from("large-v3");
+    let mut language = String::from(DEFAULT_WHISPER_LANGUAGES);
+    let mut model = String::from(DEFAULT_WHISPER_MODEL);
     let mut audio_file: Option<PathBuf> = None;
     let mut folder_path: Option<PathBuf> = None;
     let mut job_id = String::new();

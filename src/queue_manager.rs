@@ -15,6 +15,9 @@ use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::{mpsc, Mutex};
 
+const DEFAULT_WHISPER_CMD: &str = "whisperx";
+const DEFAULT_WHISPER_MODELS_DIR: &str = "/models";
+
 /// Configuration for the WhisperX command
 #[derive(Clone, Debug)]
 pub struct WhisperConfig {
@@ -28,9 +31,9 @@ impl Default for WhisperConfig {
     fn default() -> Self {
         Self {
             command_path: std::env::var("WHISPER_CMD")
-                .unwrap_or_else(|_| String::from("whisper-cli")),
+                .unwrap_or_else(|_| String::from(DEFAULT_WHISPER_CMD)),
             models_dir: std::env::var("WHISPER_MODELS_DIR")
-                .unwrap_or_else(|_| String::from("/models")),
+                .unwrap_or_else(|_| String::from(DEFAULT_WHISPER_MODELS_DIR)),
         }
     }
 }

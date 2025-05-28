@@ -1,59 +1,104 @@
-// Whisper.cpp commands
-// https://github.com/ggml-org/whisper.cpp?tab=readme-ov-file#quick-start
+// Whisper API HTTP handlers
+//
+// This module contains the HTTP handlers for the Whisper API.
+// It handles the transcription requests and responses according to the
+// architecture described in the README.
 
-// test command
-// curl -X POST "http://localhost:8080/transcribe" -F "language=fr" -F "file=@/home/jerome/Téléchargements/codir16k15m.wav"
-
-
+use crate::queue_manager::{QueueManager, TranscriptionJob};
 use actix_multipart::Multipart;
-use actix_web::{HttpResponse, Responder, post};
+use actix_web::{get, post, web, HttpResponse, Responder};
 use futures::{StreamExt, TryStreamExt};
-use serde_json::json;
+use log::{error, info, warn};
+use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use uuid::Uuid;
-const WHISPER_CMD: &str = "/home/jerome/scripts/cpp/whisper.cpp/build/bin/whisper-cli";
-const WHISPER_TMP_FILES: &str = "/home/llm/tmp";
 
-// Generate a unique filename with UUID and create a subfolder for it
-fn generate_unique_filename(prefix: &str, extension: &str) -> Result<(PathBuf, PathBuf), std::io::Error> {
-    let uuid = Uuid::new_v4();
-    let folder_name = uuid.to_string();
-    let filename = format!("{}_{}.{}", prefix, uuid, extension);
-    
-    // Create full directory path
-    let directory_path = Path::new(WHISPER_TMP_FILES).join(&folder_name);
-    
-    // Create the directory
-    fs::create_dir_all(&directory_path)?;
-    
-    // Full file path inside the new directory
-    let file_path = directory_path.join(&filename);
-    
-    Ok((directory_path, file_path))
+/// Configuration for the Whisper API handlers
+#[derive(Clone, Debug)]
+pub struct HandlerConfig {
+    /// Directory to store temporary files
+    pub temp_dir: String,
 }
 
-// Helper function to clean up the folder
-fn cleanup_folder(folder_path: &Path) {
-    if let Err(e) = fs::remove_dir_all(folder_path) {
-        eprintln!("Failed to clean up folder {}: {}", folder_path.display(), e);
+impl Default for HandlerConfig {
+    fn default() -> Self {
+        Self {
+            temp_dir: std::env::var("WHISPER_TMP_FILES")
+                .unwrap_or_else(|_| String::from("/tmp/whisper_api")),
+        }
     }
 }
 
+/// Parameters for transcription request
+#[derive(Deserialize, Debug, Default)]
+pub struct TranscriptionParams {
+    /// Language code (default: "fr")
+    pub language: Option<String>,
+    /// Model name (default: "large-v3")
+    pub model: Option<String>,
+}
+
+/// Response for transcription request
+#[derive(Serialize)]
+pub struct TranscriptionResponse {
+    /// Job ID assigned to the transcription request
+    pub job_id: String,
+    /// URL to check the status of the transcription
+    pub status_url: String,
+}
+
+/// Generate a unique filename with UUID and create a subfolder for it
+fn generate_unique_filename(
+    base_dir: &str,
+    prefix: &str,
+    extension: &str,
+) -> Result<(PathBuf, PathBuf, String), std::io::Error> {
+    let uuid = Uuid::new_v4();
+    let folder_name = uuid.to_string();
+    let filename = format!("{}_{}.{}", prefix, uuid, extension);
+
+    // Create full directory path
+    let directory_path = Path::new(base_dir).join(&folder_name);
+
+    // Create the directory
+    fs::create_dir_all(&directory_path)?;
+
+    // Full file path inside the new directory
+    let file_path = directory_path.join(&filename);
+
+    Ok((directory_path, file_path, uuid.to_string()))
+}
+
+/// Helper function to clean up the folder
+pub fn cleanup_folder(folder_path: &Path) {
+    if let Err(e) = fs::remove_dir_all(folder_path) {
+        error!("Failed to clean up folder {}: {}", folder_path.display(), e);
+    }
+}
+
+/// Handler for transcription requests
 #[post("/transcribe")]
-async fn transcribe(mut form: Multipart) -> impl Responder {
+pub async fn transcribe(
+    mut form: Multipart,
+    queue_manager: web::Data<Arc<Mutex<QueueManager>>>,
+    config: web::Data<HandlerConfig>,
+) -> impl Responder {
     // Default values
     let mut language = String::from("fr");
     let mut model = String::from("large-v3");
     let mut audio_file: Option<PathBuf> = None;
     let mut folder_path: Option<PathBuf> = None;
+    let mut job_id = String::new();
 
     // Create main tmp directory if it doesn't exist
-    if let Err(e) = fs::create_dir_all(WHISPER_TMP_FILES) {
+    if let Err(e) = fs::create_dir_all(&config.temp_dir) {
+        error!("Failed to create main tmp directory: {}", e);
         return HttpResponse::InternalServerError().json(
-            json!({ "error": format!("Failed to create main tmp directory: {}", e) }),
+            serde_json::json!({ "error": format!("Failed to create main tmp directory: {}", e) }),
         );
     }
 
@@ -85,18 +130,26 @@ async fn transcribe(mut form: Multipart) -> impl Responder {
             }
             "file" => {
                 // Generate a unique folder and filename for the audio file
-                let (dir_path, file_path) = match generate_unique_filename("whisper", "audio") {
-                    Ok((folder, file)) => (folder, file),
+                let (dir_path, file_path, uuid) = match generate_unique_filename(
+                    &config.temp_dir,
+                    "whisper",
+                    "audio",
+                ) {
+                    Ok((folder, file, id)) => {
+                        job_id = id.clone();
+                        (folder, file, id)
+                    }
                     Err(e) => {
+                        error!("Failed to create unique directory: {}", e);
                         return HttpResponse::InternalServerError().json(
-                            json!({ "error": format!("Failed to create unique directory: {}", e) }),
+                            serde_json::json!({ "error": format!("Failed to create unique directory: {}", e) }),
                         );
                     }
                 };
-                
-                // Store folder path for cleanup
+
+                // Store folder path for cleanup in case of error
                 folder_path = Some(dir_path);
-                
+
                 // Open the file for writing
                 let mut file = match File::create(&file_path) {
                     Ok(file) => file,
@@ -105,8 +158,9 @@ async fn transcribe(mut form: Multipart) -> impl Responder {
                         if let Some(folder) = &folder_path {
                             cleanup_folder(folder);
                         }
+                        error!("Failed to create file: {}", e);
                         return HttpResponse::InternalServerError().json(
-                            json!({ "error": format!("Failed to create file: {}", e) }),
+                            serde_json::json!({ "error": format!("Failed to create file: {}", e) }),
                         );
                     }
                 };
@@ -120,8 +174,9 @@ async fn transcribe(mut form: Multipart) -> impl Responder {
                                 if let Some(folder) = &folder_path {
                                     cleanup_folder(folder);
                                 }
+                                error!("Failed to write to file: {}", e);
                                 return HttpResponse::InternalServerError()
-                                    .json(json!({ "error": format!("Failed to write to file: {}", e) }));
+                                    .json(serde_json::json!({ "error": format!("Failed to write to file: {}", e) }));
                             }
                         }
                         Err(e) => {
@@ -129,8 +184,9 @@ async fn transcribe(mut form: Multipart) -> impl Responder {
                             if let Some(folder) = &folder_path {
                                 cleanup_folder(folder);
                             }
+                            error!("Error processing file upload: {}", e);
                             return HttpResponse::BadRequest().json(
-                                json!({ "error": format!("Error processing file upload: {}", e) }),
+                                serde_json::json!({ "error": format!("Error processing file upload: {}", e) }),
                             );
                         }
                     }
@@ -151,76 +207,87 @@ async fn transcribe(mut form: Multipart) -> impl Responder {
         Some(path) => path,
         None => {
             // No cleanup needed here as no folder was created
-            return HttpResponse::BadRequest().json(json!({
+            return HttpResponse::BadRequest().json(serde_json::json!({
                 "error": "No audio file provided in the request"
             }));
         }
     };
 
-    // Create a response to return after cleanup
-    let response = {
-        // Execute whisper command
-        let output = Command::new(WHISPER_CMD)
-            .arg("-m")
-            .arg(format!(
-                "/home/jerome/scripts/cpp/whisper.cpp/models/ggml-{}.bin",
-                model
-            ))
-            .arg("-l")
-            .arg(&language)
-            .arg("-f")
-            .arg(&audio_path)
-            .arg("-oj")
-            .output();
-        
-        // Process command output
-        match output {
-            Ok(output) => {
-                if output.status.success() {
-                    // Try to parse output as JSON
-                    match String::from_utf8(output.stdout) {
-                        Ok(stdout) => {
-                            match serde_json::from_str::<serde_json::Value>(&stdout) {
-                                Ok(json_value) => {
-                                    // Return the JSON output from whisper
-                                    HttpResponse::Ok().json(json_value)
-                                }
-                                Err(_) => {
-                                    // If parsing as JSON fails, return the raw output
-                                    HttpResponse::Ok().json(json!({
-                                        "text": stdout.trim()
-                                    }))
-                                }
-                            }
-                        }
-                        Err(_) => {
-                            HttpResponse::InternalServerError().json(json!({
-                                "error": "Failed to parse command output"
-                            }))
-                        }
-                    }
-                } else {
-                    // Command executed but failed
-                    let error = String::from_utf8_lossy(&output.stderr).to_string();
-                    HttpResponse::BadRequest().json(json!({
-                        "error": error
-                    }))
-                }
-            }
-            Err(e) => {
-                // Failed to execute command
-                HttpResponse::InternalServerError().json(json!({
-                    "error": format!("Failed to execute whisper command: {}", e)
-                }))
-            }
-        }
+    // Create a transcription job and add it to the queue
+    let job = TranscriptionJob {
+        id: job_id.clone(),
+        audio_file: audio_path.clone(),
+        folder_path: folder_path.clone().unwrap(),
+        language,
+        model,
     };
 
-    // Clean up the folder before returning the response
-    if let Some(folder) = folder_path {
-        cleanup_folder(&folder);
+    // Add job to queue
+    {
+        let queue_manager = queue_manager.lock().await;
+        if let Err(e) = queue_manager.add_job(job).await {
+            // Clean up folder before returning error
+            if let Some(folder) = &folder_path {
+                cleanup_folder(folder);
+            }
+            error!("Failed to add job to queue: {}", e);
+            return HttpResponse::InternalServerError().json(
+                serde_json::json!({ "error": format!("Failed to add job to queue: {}", e) }),
+            );
+        }
     }
 
-    // Return the response
-    response
+    // Generate status URL for client to check progress
+    let status_url = format!("/transcription/{}", job_id);
+
+    // Return job ID and status URL to client
+    info!("Job {} added to queue", job_id);
+    HttpResponse::Accepted().json(TranscriptionResponse { job_id, status_url })
+}
+
+/// Handler for transcription status requests
+#[get("/transcription/{job_id}")]
+pub async fn transcription_status(
+    job_id: web::Path<String>,
+    queue_manager: web::Data<Arc<Mutex<QueueManager>>>,
+) -> impl Responder {
+    let job_id = job_id.into_inner();
+
+    // Check job status
+    let queue_manager = queue_manager.lock().await;
+    match queue_manager.get_job_status(&job_id).await {
+        Ok(status) => HttpResponse::Ok().json(status),
+        Err(e) => {
+            error!("Failed to get job status: {}", e);
+            HttpResponse::NotFound()
+                .json(serde_json::json!({ "error": format!("Job not found or error: {}", e) }))
+        }
+    }
+}
+
+/// Handler for completed transcription results
+#[get("/transcription/{job_id}/result")]
+pub async fn transcription_result(
+    job_id: web::Path<String>,
+    queue_manager: web::Data<Arc<Mutex<QueueManager>>>,
+) -> impl Responder {
+    let job_id = job_id.into_inner();
+
+    // Get the job result
+    let queue_manager = queue_manager.lock().await;
+    match queue_manager.get_job_result(&job_id).await {
+        Ok(result) => {
+            // Clean up the job files after delivering the result
+            if let Err(e) = queue_manager.cleanup_job(&job_id).await {
+                warn!("Failed to clean up job {}: {}", job_id, e);
+            }
+            HttpResponse::Ok().json(result)
+        }
+        Err(e) => {
+            error!("Failed to get job result: {}", e);
+            HttpResponse::NotFound().json(
+                serde_json::json!({ "error": format!("Job result not found or error: {}", e) }),
+            )
+        }
+    }
 }

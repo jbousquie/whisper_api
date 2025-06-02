@@ -59,6 +59,8 @@ POST /transcribe
 - `file`: Audio file to transcribe (required)
 - `language`: Language code (optional, default: "fr")
 - `model`: Model name (optional, default: "large-v3")
+- `diarize`: Whether to apply speaker diarization (optional, default: true)
+- `prompt`: Initial text prompt for transcription (optional, default: "")
 
 **Response**:
 ```json
@@ -131,6 +133,24 @@ DELETE /transcription/{job_id}
 ```bash
 curl -X POST "http://localhost:8181/transcribe" \
   -F "language=fr" \
+  -F "diarize=true" \
+  -F "prompt=Meeting transcript:" \
+  -F "file=@/path/to/audio.wav"
+```
+
+### Examples
+
+#### Disable Speaker Diarization
+```bash
+curl -X POST "http://localhost:8181/transcribe" \
+  -F "diarize=false" \
+  -F "file=@/path/to/audio.wav"
+```
+
+#### Add Initial Prompt
+```bash
+curl -X POST "http://localhost:8181/transcribe" \
+  -F "prompt=This is an interview between John and Sarah:" \
   -F "file=@/path/to/audio.wav"
 ```
 

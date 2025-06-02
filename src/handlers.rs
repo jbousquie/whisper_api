@@ -85,6 +85,8 @@ pub async fn transcribe(
     // Default values
     let mut language = String::from(DEFAULT_LANGUAGE);
     let mut model = String::from(DEFAULT_MODEL);
+    let mut diarize = true;  // Default: enable speaker diarization
+    let mut prompt = String::new();  // Default: empty prompt
     let mut audio_file: Option<PathBuf> = None;
     let mut folder_path: Option<PathBuf> = None;
     let mut job_id = String::new();
@@ -105,7 +107,7 @@ pub async fn transcribe(
             .unwrap_or_default();
 
         match field_name.as_str() {
-            "language" | "model" => {
+            "language" | "model" | "prompt" => {
                 // Simplified reading of text parameters
                 let mut value = String::new();
                 while let Some(Ok(chunk)) = field.next().await {
@@ -116,12 +118,29 @@ pub async fn transcribe(
 
                 let value = value.trim().to_string();
                 if !value.is_empty() {
-                    if field_name.as_str() == "language" {
-                        language = value;
-                    } else {
-                        model = value;
+                    match field_name.as_str() {
+                        "language" => language = value,
+                        "model" => model = value,
+                        "prompt" => prompt = value,
+                        _ => {}
                     }
                 }
+            }
+            "diarize" => {
+                // Parse boolean value for diarization
+                let mut value = String::new();
+                while let Some(Ok(chunk)) = field.next().await {
+                    if let Ok(s) = std::str::from_utf8(&chunk) {
+                        value.push_str(s);
+                    }
+                }
+
+                let value = value.trim().to_lowercase();
+                // Accept various forms of boolean values
+                diarize = match value.as_str() {
+                    "false" | "0" | "no" | "off" => false,
+                    _ => true, // Default to true for any other input
+                };
             }
             "file" => {
                 // Generate a unique folder and filename for the audio file
@@ -215,6 +234,8 @@ pub async fn transcribe(
         folder_path: folder_path.clone().unwrap(),
         language,
         model,
+        diarize,  // Add diarization parameter
+        prompt,   // Add initial prompt parameter
     };
 
     // Add job to queue

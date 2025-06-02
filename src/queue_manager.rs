@@ -72,6 +72,10 @@ pub struct TranscriptionJob {
     pub language: String,
     /// Model name to use
     pub model: String,
+    /// Whether to apply speaker diarization
+    pub diarize: bool,
+    /// Optional initial prompt for transcription
+    pub prompt: String,
 }
 
 /// Job metadata saved separately from the job itself
@@ -307,15 +311,28 @@ impl QueueManager {
         debug!("Processing job {}", job.id);
 
         // Execute whisper command
-        let output = Command::new(&config.command_path)
+        let mut command = Command::new(&config.command_path);
+        
+        command
             .arg("-m")
             .arg(format!("{}/ggml-{}.bin", config.models_dir, job.model))
             .arg("-l")
             .arg(&job.language)
             .arg("-f")
             .arg(&job.audio_file)
-            .arg("-oj")
-            .output()
+            .arg("-oj");
+            
+        // Add diarization if requested
+        if job.diarize {
+            command.arg("--diarize");
+        }
+        
+        // Add initial prompt if provided
+        if !job.prompt.is_empty() {
+            command.arg("--initial_prompt").arg(&job.prompt);
+        }
+        
+        let output = command.output()
             .map_err(|e| QueueError::TranscriptionError(format!("Failed to run command: {}", e)))?;
 
         if !output.status.success() {

@@ -76,6 +76,8 @@ pub struct TranscriptionJob {
     pub diarize: bool,
     /// Optional initial prompt for transcription
     pub prompt: String,
+    /// Hugging Face token for accessing diarization models
+    pub hf_token: Option<String>,
 }
 
 /// Job metadata saved separately from the job itself
@@ -325,6 +327,13 @@ impl QueueManager {
         // Add diarization if requested
         if job.diarize {
             command.arg("--diarize");
+            
+            // Add HF token if available for diarization models
+            if let Some(token) = &job.hf_token {
+                if !token.is_empty() {
+                    command.arg("--hf_token").arg(token);
+                }
+            }
         }
         
         // Add initial prompt if provided

@@ -46,6 +46,7 @@ The application can be configured using the following environment variables:
 | `WHISPER_JOB_RETENTION_HOURS` | Number of hours to keep job files before automatic cleanup | `48` |
 | `WHISPER_CLEANUP_INTERVAL_HOURS` | Interval in hours between cleanup runs | `1` |
 | `RUST_LOG` | Logging level (error, warn, info, debug, trace) | `info` |
+| `HF_TOKEN` | Hugging Face API token for diarization models access (can alternatively be passed per-request) | None |
 
 ## API Endpoints
 
@@ -61,6 +62,7 @@ POST /transcribe
 - `model`: Model name (optional, default: "large-v3")
 - `diarize`: Whether to apply speaker diarization (optional, default: true)
 - `prompt`: Initial text prompt for transcription (optional, default: "")
+- `hf_token`: Hugging Face API token for accessing diarization models (optional, required when diarization is enabled)
 
 **Response**:
 ```json
@@ -135,6 +137,7 @@ curl -X POST "http://localhost:8181/transcribe" \
   -F "language=fr" \
   -F "diarize=true" \
   -F "prompt=Meeting transcript:" \
+  -F "hf_token=YOUR_HUGGINGFACE_TOKEN" \
   -F "file=@/path/to/audio.wav"
 ```
 
@@ -151,6 +154,14 @@ curl -X POST "http://localhost:8181/transcribe" \
 ```bash
 curl -X POST "http://localhost:8181/transcribe" \
   -F "prompt=This is an interview between John and Sarah:" \
+  -F "file=@/path/to/audio.wav"
+```
+
+#### Use Diarization with Hugging Face Token
+```bash
+curl -X POST "http://localhost:8181/transcribe" \
+  -F "diarize=true" \
+  -F "hf_token=YOUR_HUGGINGFACE_TOKEN" \
   -F "file=@/path/to/audio.wav"
 ```
 

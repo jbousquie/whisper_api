@@ -87,6 +87,7 @@ pub async fn transcribe(
     let mut model = String::from(DEFAULT_MODEL);
     let mut diarize = true;  // Default: enable speaker diarization
     let mut prompt = String::new();  // Default: empty prompt
+    let mut hf_token = None::<String>;  // Default: no HuggingFace token
     let mut audio_file: Option<PathBuf> = None;
     let mut folder_path: Option<PathBuf> = None;
     let mut job_id = String::new();
@@ -107,7 +108,7 @@ pub async fn transcribe(
             .unwrap_or_default();
 
         match field_name.as_str() {
-            "language" | "model" | "prompt" => {
+            "language" | "model" | "prompt" | "hf_token" => {
                 // Simplified reading of text parameters
                 let mut value = String::new();
                 while let Some(Ok(chunk)) = field.next().await {
@@ -122,6 +123,7 @@ pub async fn transcribe(
                         "language" => language = value,
                         "model" => model = value,
                         "prompt" => prompt = value,
+                        "hf_token" => hf_token = Some(value),
                         _ => {}
                     }
                 }
@@ -236,6 +238,7 @@ pub async fn transcribe(
         model,
         diarize,  // Add diarization parameter
         prompt,   // Add initial prompt parameter
+        hf_token, // Add HuggingFace token for diarization
     };
 
     // Add job to queue

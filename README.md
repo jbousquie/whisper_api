@@ -136,4 +136,5 @@ curl -X POST "http://localhost:8181/transcribe" \
 
 ## Resources
 
-- WhisperX : https://github.com/m-bain/whisperX
+- WhisperX: https://github.com/m-bain/whisperX
+- [WhisperX Documentation](whisperx.md)

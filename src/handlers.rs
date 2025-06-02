@@ -4,22 +4,18 @@
 // It handles the transcription requests and responses according to the
 // architecture described in the README.
 
-use crate::queue_manager::{QueueManager, TranscriptionJob};
+use crate::queue_manager::{QueueError, QueueManager, TranscriptionJob};
 use actix_multipart::Multipart;
-use actix_web::{get, post, web, HttpResponse, Responder};
+use actix_web::{delete, get, post, web, HttpResponse, Responder};
 use futures::{StreamExt, TryStreamExt};
 use log::{error, info, warn};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use uuid::Uuid;
-
-const DEFAULT_WHISPER_TMP_FILES: &str = "/tmp/whisper_api";
-const DEFAULT_WHISPER_LANGUAGES: &str = "fr";
-const DEFAULT_WHISPER_MODEL: &str = "large-v3";
 
 /// Configuration for the Whisper API handlers
 #[derive(Clone, Debug)]
@@ -32,18 +28,9 @@ impl Default for HandlerConfig {
     fn default() -> Self {
         Self {
             temp_dir: std::env::var("WHISPER_TMP_FILES")
-                .unwrap_or_else(|_| String::from(DEFAULT_WHISPER_TMP_FILES)),
+                .unwrap_or_else(|_| String::from("/tmp/whisper_api")),
         }
     }
-}
-
-/// Parameters for transcription request
-#[derive(Deserialize, Debug, Default)]
-pub struct TranscriptionParams {
-    /// Language code (default: "fr")
-    pub language: Option<String>,
-    /// Model name (default: "large-v3")
-    pub model: Option<String>,
 }
 
 /// Response for transcription request
@@ -92,8 +79,8 @@ pub async fn transcribe(
     config: web::Data<HandlerConfig>,
 ) -> impl Responder {
     // Default values
-    let mut language = String::from(DEFAULT_WHISPER_LANGUAGES);
-    let mut model = String::from(DEFAULT_WHISPER_MODEL);
+    let mut language = String::from("fr");
+    let mut model = String::from("large-v3");
     let mut audio_file: Option<PathBuf> = None;
     let mut folder_path: Option<PathBuf> = None;
     let mut job_id = String::new();
@@ -134,7 +121,7 @@ pub async fn transcribe(
             }
             "file" => {
                 // Generate a unique folder and filename for the audio file
-                let (dir_path, file_path, uuid) = match generate_unique_filename(
+                let (dir_path, file_path, _id) = match generate_unique_filename(
                     &config.temp_dir,
                     "whisper",
                     "audio",
@@ -261,11 +248,19 @@ pub async fn transcription_status(
     let queue_manager = queue_manager.lock().await;
     match queue_manager.get_job_status(&job_id).await {
         Ok(status) => HttpResponse::Ok().json(status),
-        Err(e) => {
-            error!("Failed to get job status: {}", e);
-            HttpResponse::NotFound()
-                .json(serde_json::json!({ "error": format!("Job not found or error: {}", e) }))
-        }
+        Err(e) => match e {
+            QueueError::JobNotFound(_) => {
+                info!("Status requested for non-existent job {}: {}", job_id, e);
+                HttpResponse::NotFound()
+                    .json(serde_json::json!({ "error": format!("Job not found: {}", e) }))
+            }
+            _ => {
+                error!("Failed to get job status: {}", e);
+                HttpResponse::InternalServerError().json(
+                    serde_json::json!({ "error": format!("Error retrieving job status: {}", e) }),
+                )
+            }
+        },
     }
 }
 
@@ -287,11 +282,67 @@ pub async fn transcription_result(
             }
             HttpResponse::Ok().json(result)
         }
-        Err(e) => {
-            error!("Failed to get job result: {}", e);
-            HttpResponse::NotFound().json(
-                serde_json::json!({ "error": format!("Job result not found or error: {}", e) }),
-            )
+        Err(e) => match e {
+            QueueError::JobNotFound(_) => {
+                info!("Result requested for non-existent job {}: {}", job_id, e);
+                HttpResponse::NotFound()
+                    .json(serde_json::json!({ "error": format!("Job not found: {}", e) }))
+            }
+            QueueError::QueueError(ref msg) if msg.contains("not completed yet") => {
+                info!("Result requested for incomplete job {}: {}", job_id, e);
+                HttpResponse::Accepted().json(serde_json::json!({
+                    "error": "Job is still processing",
+                    "status": "pending"
+                }))
+            }
+            _ => {
+                error!("Failed to get job result: {}", e);
+                HttpResponse::InternalServerError().json(
+                    serde_json::json!({ "error": format!("Error retrieving job result: {}", e) }),
+                )
+            }
+        },
+    }
+}
+
+/// Handler for canceling a transcription job
+#[delete("/transcription/{job_id}")]
+pub async fn cancel_transcription(
+    job_id: web::Path<String>,
+    queue_manager: web::Data<Arc<Mutex<QueueManager>>>,
+) -> impl Responder {
+    let job_id = job_id.into_inner();
+
+    // Cancel the job
+    let queue_manager = queue_manager.lock().await;
+    match queue_manager.cancel_job(&job_id).await {
+        Ok(_) => {
+            info!("Successfully canceled job: {}", job_id);
+            HttpResponse::Ok().json(serde_json::json!({
+                "success": true,
+                "message": "Job canceled successfully"
+            }))
         }
+        Err(e) => match e {
+            QueueError::JobNotFound(_) => {
+                info!(
+                    "Cancellation requested for non-existent job {}: {}",
+                    job_id, e
+                );
+                HttpResponse::NotFound()
+                    .json(serde_json::json!({ "error": format!("Job not found: {}", e) }))
+            }
+            QueueError::CannotCancelJob(reason) => {
+                info!("Cannot cancel job {}: {}", job_id, reason);
+                HttpResponse::BadRequest().json(serde_json::json!({
+                    "error": format!("Cannot cancel job: {}", reason)
+                }))
+            }
+            _ => {
+                error!("Failed to cancel job {}: {}", job_id, e);
+                HttpResponse::InternalServerError()
+                    .json(serde_json::json!({ "error": format!("Error canceling job: {}", e) }))
+            }
+        },
     }
 }

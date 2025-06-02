@@ -4,7 +4,7 @@
 //! requests asynchronously. It processes one job at a time to ensure WhisperX can use all available
 //! physical resources for each transcription job.
 
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::collections::VecDeque;
@@ -12,11 +12,18 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 use thiserror::Error;
 use tokio::sync::{mpsc, Mutex};
 
 const DEFAULT_WHISPER_CMD: &str = "whisperx";
 const DEFAULT_WHISPER_MODELS_DIR: &str = "/models";
+const DEFAULT_JOB_RETENTION_HOURS: u64 = 48;
+const DEFAULT_CLEANUP_INTERVAL_HOURS: u64 = 1;
+
+// Environment variable names
+const ENV_JOB_RETENTION_HOURS: &str = "WHISPER_JOB_RETENTION_HOURS";
+const ENV_CLEANUP_INTERVAL_HOURS: &str = "WHISPER_CLEANUP_INTERVAL_HOURS";
 
 /// Configuration for the WhisperX command
 #[derive(Clone, Debug)]
@@ -67,6 +74,15 @@ pub struct TranscriptionJob {
     pub model: String,
 }
 
+/// Job metadata saved separately from the job itself
+#[derive(Debug, Clone)]
+struct JobMetadata {
+    /// Path to the folder containing job files
+    folder_path: PathBuf,
+    /// Timestamp when the job was created
+    created_at: SystemTime,
+}
+
 /// Transcription result structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TranscriptionResult {
@@ -108,6 +124,9 @@ pub enum QueueError {
     /// Internal error in the queue system
     #[error("Queue error: {0}")]
     QueueError(String),
+    /// Cannot cancel job in its current state
+    #[error("Cannot cancel job: {0}")]
+    CannotCancelJob(String),
 }
 
 /// Internal state of the queue manager
@@ -119,23 +138,30 @@ struct QueueState {
     /// Map of job results by job ID
     results: HashMap<String, TranscriptionResult>,
     /// Flag indicating if a job is currently being processed
+    /// This is the key mechanism that ensures only one job runs at a time.
+    /// When true, no new jobs will be started from the queue.
     processing: bool,
+    /// Map of job metadata by job ID
+    job_metadata: HashMap<String, JobMetadata>,
 }
 
 /// Queue Manager for handling transcription jobs
 pub struct QueueManager {
     /// Internal state protected by a mutex
+    /// The mutex ensures that all state access is atomic and thread-safe,
+    /// preventing race conditions when checking or updating the processing flag.
     state: Arc<Mutex<QueueState>>,
     /// Job processor channel
+    /// This single channel is used to send jobs to a single background task,
+    /// ensuring jobs are processed one at a time in the order they're received.
     job_tx: mpsc::Sender<TranscriptionJob>,
-    /// Configuration for WhisperX
-    config: WhisperConfig,
 }
 
 impl QueueManager {
     /// Create a new queue manager instance and start background processing
     pub fn new(config: WhisperConfig) -> Arc<Mutex<Self>> {
         // Create channels for job processing
+        // This single channel approach ensures jobs are processed sequentially
         let (job_tx, job_rx) = mpsc::channel(100);
 
         // Initialize internal state
@@ -143,23 +169,28 @@ impl QueueManager {
             queue: VecDeque::new(),
             statuses: HashMap::new(),
             results: HashMap::new(),
-            processing: false,
+            processing: false, // Initially not processing any job
+            job_metadata: HashMap::new(),
         }));
 
         // Create the queue manager
         let manager = Arc::new(Mutex::new(Self {
             state: state.clone(),
             job_tx: job_tx.clone(),
-            config: config.clone(),
         }));
 
-        // Start the background processor
-        Self::start_job_processor(job_rx, job_tx, state, config);
+        // Start the background processor - only one processor task is created
+        // This single task listens to the job channel and processes jobs one at a time
+        Self::start_job_processor(job_rx, job_tx, state.clone(), config);
+
+        // Start the cleanup task
+        Self::start_cleanup_task(Arc::clone(&manager));
 
         manager
     }
 
     /// Start the background job processor
+    /// This creates a single processing task that handles one job at a time
     fn start_job_processor(
         mut job_rx: mpsc::Receiver<TranscriptionJob>,
         job_tx: mpsc::Sender<TranscriptionJob>,
@@ -169,6 +200,9 @@ impl QueueManager {
         tokio::spawn(async move {
             info!("Job processor started");
 
+            // Process jobs one at a time in the order they're received
+            // This loop ensures sequential processing - one job must complete
+            // before the next one is handled
             while let Some(job) = job_rx.recv().await {
                 let job_id = job.id.clone();
                 info!("Processing job: {}", job_id);
@@ -203,15 +237,18 @@ impl QueueManager {
                         }
                     }
 
-                    // Mark job as no longer processing
+                    // Mark job as no longer processing - this is critical for the sequential processing
+                    // The flag must be cleared after a job finishes so the next job can start
                     state_guard.processing = false;
                 }
 
-                // Check if there are more jobs to process
+                // Sequential job chaining: after completing one job, check if there are more jobs
+                // and start the next one, maintaining the FIFO order
                 {
                     let mut state_guard = state.lock().await;
                     if !state_guard.queue.is_empty() {
                         let next_job = state_guard.queue.pop_front().unwrap();
+                        // Set processing flag to true for the next job
                         state_guard.processing = true;
                         drop(state_guard); // Release lock before sending
 
@@ -230,11 +267,15 @@ impl QueueManager {
     }
 
     /// Check if there are jobs waiting and start the next one if not currently processing
+    /// This is the job starting logic that enforces sequential processing
     async fn check_and_start_next_job(&self) -> Result<(), QueueError> {
         // Check if we have jobs waiting and we're not currently processing one
+        // The critical part is checking !state_guard.processing which ensures
+        // we never start a new job if one is already running
         let next_job = {
             let mut state_guard = self.state.lock().await;
             if !state_guard.processing && !state_guard.queue.is_empty() {
+                // Set flag BEFORE starting job to prevent concurrent starts
                 state_guard.processing = true;
                 state_guard.queue.pop_front()
             } else {
@@ -296,17 +337,118 @@ impl QueueManager {
         Ok(result)
     }
 
+    /// Start a background task to periodically clean up old jobs
+    fn start_cleanup_task(queue_manager: Arc<Mutex<Self>>) {
+        // Get cleanup interval from environment variable or use default
+        let cleanup_interval_hours = std::env::var(ENV_CLEANUP_INTERVAL_HOURS)
+            .ok()
+            .and_then(|val| val.parse::<u64>().ok())
+            .unwrap_or(DEFAULT_CLEANUP_INTERVAL_HOURS);
+        let cleanup_interval = Duration::from_secs(cleanup_interval_hours * 3600);
+
+        // Get retention period from environment variable or use default
+        let job_retention_hours = std::env::var(ENV_JOB_RETENTION_HOURS)
+            .ok()
+            .and_then(|val| val.parse::<u64>().ok())
+            .unwrap_or(DEFAULT_JOB_RETENTION_HOURS);
+        let max_age = Duration::from_secs(job_retention_hours * 3600);
+
+        info!(
+            "Starting cleanup task: retention period {} hours, interval {} hours",
+            job_retention_hours, cleanup_interval_hours
+        );
+
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(cleanup_interval);
+
+            loop {
+                interval.tick().await;
+                info!("Running scheduled cleanup of old jobs");
+
+                // Get a copy of the QueueManager
+                let queue_manager = queue_manager.lock().await;
+
+                // Find and clean up old jobs
+                match queue_manager.cleanup_old_jobs(max_age).await {
+                    Ok(count) => {
+                        if count > 0 {
+                            info!("Cleaned up {} expired jobs", count);
+                        } else {
+                            debug!("No expired jobs to clean up");
+                        }
+                    }
+                    Err(e) => {
+                        error!("Error during scheduled cleanup: {}", e);
+                    }
+                }
+            }
+        });
+    }
+
+    /// Clean up jobs older than the specified duration
+    async fn cleanup_old_jobs(&self, max_age: Duration) -> Result<usize, QueueError> {
+        let now = SystemTime::now();
+        let mut cleanup_count = 0;
+
+        // Collect job IDs to clean up
+        let job_ids_to_clean: Vec<String> = {
+            let state = self.state.lock().await;
+            state
+                .job_metadata
+                .iter()
+                .filter_map(
+                    |(job_id, metadata)| match now.duration_since(metadata.created_at) {
+                        Ok(age) if age > max_age => Some(job_id.clone()),
+                        _ => None,
+                    },
+                )
+                .collect()
+        };
+
+        // Clean up each expired job
+        for job_id in job_ids_to_clean {
+            match self.cleanup_job(&job_id).await {
+                Ok(_) => {
+                    info!("Cleaned up expired job: {}", job_id);
+                    cleanup_count += 1;
+                }
+                Err(e) => {
+                    warn!("Failed to clean up expired job {}: {}", job_id, e);
+                }
+            }
+        }
+
+        Ok(cleanup_count)
+    }
+
     /// Add a job to the queue
+    /// This is the entry point for new transcription requests
     pub async fn add_job(&self, job: TranscriptionJob) -> Result<(), QueueError> {
         let job_id = job.id.clone();
 
         {
+            // Acquire mutex lock to safely modify state
+            // This ensures thread-safe access to the job queue and other state
             let mut state = self.state.lock().await;
+
+            // Save job metadata before adding to queue
+            state.job_metadata.insert(
+                job_id.clone(),
+                JobMetadata {
+                    folder_path: job.folder_path.clone(),
+                    created_at: SystemTime::now(),
+                },
+            );
+
+            // Add job to queue (FIFO order) and update status
+            // Jobs are always added to the back of the queue
             state.queue.push_back(job);
             state.statuses.insert(job_id.clone(), JobStatus::Queued);
-        }
+        } // Lock is automatically released when state goes out of scope
 
         // Check if we need to start processing
+        // This will only start a job if nothing is currently processing
+        // which enforces the sequential processing requirement
         if let Err(e) = self.check_and_start_next_job().await {
             error!("Failed to start next job: {}", e);
         }
@@ -342,37 +484,95 @@ impl QueueManager {
         }
     }
 
+    /// Cancel a pending job and remove its resources
+    pub async fn cancel_job(&self, job_id: &str) -> Result<(), QueueError> {
+        let mut state = self.state.lock().await;
+
+        // Check if job exists
+        if let Some(status) = state.statuses.get(job_id) {
+            // Only allow cancellation of queued jobs, not processing or completed jobs
+            match status {
+                JobStatus::Queued => {
+                    // Remove the job from the queue if it's there
+                    state.queue.retain(|job| job.id != job_id);
+
+                    // Get folder path from job metadata
+                    if let Some(metadata) = state.job_metadata.get(job_id) {
+                        let folder_path = metadata.folder_path.clone();
+                        drop(state); // Release lock before filesystem operations
+
+                        // Remove job files
+                        if let Err(e) = fs::remove_dir_all(&folder_path) {
+                            error!("Failed to remove folder for canceled job {}: {}", job_id, e);
+                            // Continue with cancellation even if file removal fails
+                        }
+
+                        // Re-acquire lock to update state
+                        let mut state = self.state.lock().await;
+                        // Remove job from tracking
+                        state.statuses.remove(job_id);
+                        state.results.remove(job_id);
+                        state.job_metadata.remove(job_id);
+                    } else {
+                        // No folder path found, but still remove job from tracking
+                        state.statuses.remove(job_id);
+                        state.results.remove(job_id);
+                        state.job_metadata.remove(job_id);
+                    }
+
+                    info!("Canceled job: {}", job_id);
+                    Ok(())
+                }
+                JobStatus::Processing => Err(QueueError::CannotCancelJob(
+                    "Cannot cancel a job that is currently processing".to_string(),
+                )),
+                JobStatus::Completed(_) | JobStatus::Failed(_) => {
+                    // For completed/failed jobs, we'll just clean them up
+                    drop(state); // Release lock before calling another method
+                    self.cleanup_job(job_id).await
+                }
+            }
+        } else {
+            Err(QueueError::JobNotFound(job_id.to_string()))
+        }
+    }
+
     /// Clean up a job and its resources
     pub async fn cleanup_job(&self, job_id: &str) -> Result<(), QueueError> {
         let mut state = self.state.lock().await;
 
-        // Check if job exists and is in a terminal state
+        // Check if job exists
         if let Some(status) = state.statuses.get(job_id) {
+            // Only enforce "completed" check for manual cleanup, not for expiration cleanup
             if !matches!(status, JobStatus::Completed(_) | JobStatus::Failed(_)) {
                 return Err(QueueError::QueueError(
                     "Cannot clean up a job that is still in progress".to_string(),
                 ));
             }
 
-            // Find job folder path
-            for job in &state.queue {
-                if job.id == job_id {
-                    // Remove job files
-                    if let Err(e) = fs::remove_dir_all(&job.folder_path) {
-                        error!(
-                            "Failed to remove job folder {}: {}",
-                            job.folder_path.display(),
-                            e
-                        );
-                        return Err(QueueError::IoError(e));
-                    }
-                    break;
+            // Get folder path from job metadata
+            let folder_path = state
+                .job_metadata
+                .get(job_id)
+                .map(|metadata| &metadata.folder_path);
+
+            // Try to remove files if we found a folder path
+            if let Some(path) = folder_path {
+                if let Err(e) = fs::remove_dir_all(path) {
+                    error!("Failed to remove job folder {}: {}", path.display(), e);
+                    // Don't return error here, we still want to clean up the job state
                 }
+            } else {
+                warn!(
+                    "No folder path found for job {}, skipping file cleanup",
+                    job_id
+                );
             }
 
             // Remove job from state tracking
             state.statuses.remove(job_id);
             state.results.remove(job_id);
+            state.job_metadata.remove(job_id);
 
             Ok(())
         } else {

@@ -21,12 +21,14 @@ The Whisper API follows a queue-based architecture:
    - Stores results in a temporary directory
    - Tracks job status (queued, processing, completed, failed)
    - Handles cleanup of temporary files
+   - Automatically removes old jobs after the retention period (configurable, default: 48 hours)
 
 3. **Client Workflow**:
    - Client submits audio for transcription and receives a job ID
    - Client periodically checks status URL until transcription is ready
    - When ready, client downloads the transcription result
    - After successful download, temporary files are cleaned up
+   - Alternatively, client can cancel a pending job if transcription is no longer needed
 
 ## Environment Variables
 
@@ -41,6 +43,8 @@ The application can be configured using the following environment variables:
 | `WHISPER_API_PORT` | Port for the HTTP server | `8181` |
 | `WHISPER_API_TIMEOUT` | Client disconnect timeout in seconds | `480` |
 | `WHISPER_API_KEEPALIVE` | Keep-alive timeout in seconds | `480` |
+| `WHISPER_JOB_RETENTION_HOURS` | Number of hours to keep job files before automatic cleanup | `48` |
+| `WHISPER_CLEANUP_INTERVAL_HOURS` | Interval in hours between cleanup runs | `1` |
 | `RUST_LOG` | Logging level (error, warn, info, debug, trace) | `info` |
 
 ## API Endpoints
@@ -96,6 +100,29 @@ GET /transcription/{job_id}/result
       "text": "Segment text"
     }
   ]
+}
+```
+
+### Cancel a Transcription Job
+
+```
+DELETE /transcription/{job_id}
+```
+
+**Description**: Cancels a pending job and removes associated audio files. Jobs that are already processing cannot be canceled.
+
+**Response (Success)**:
+```json
+{
+  "success": true,
+  "message": "Job canceled successfully"
+}
+```
+
+**Response (Error)**:
+```json
+{
+  "error": "Error message (job not found, already processing, etc.)"
 }
 ```
 

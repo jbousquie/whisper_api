@@ -3,7 +3,7 @@ mod queue_manager;
 
 use actix_web::{web, App, HttpServer};
 use env_logger::Env;
-use handlers::{transcribe, transcription_result, transcription_status, HandlerConfig};
+use handlers::{transcribe, transcription_result, transcription_status, cancel_transcription, HandlerConfig};
 use log::{info, warn};
 use queue_manager::{QueueManager, WhisperConfig};
 
@@ -62,6 +62,7 @@ async fn main() -> std::io::Result<()> {
             .service(transcribe)
             .service(transcription_status)
             .service(transcription_result)
+            .service(cancel_transcription)
     })
     .bind(format!("{}:{}", host, port))?
     .client_disconnect_timeout(timeout)

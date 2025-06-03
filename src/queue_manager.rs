@@ -9,21 +9,28 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use thiserror::Error;
 use tokio::sync::{mpsc, Mutex};
 
-const DEFAULT_WHISPER_CMD: &str = "whisperx";
-const DEFAULT_WHISPER_MODELS_DIR: &str = "/models";
+const DEFAULT_WHISPER_CMD: &str = "/home/llm/whisperx/venv/bin/whisperx";
+const DEFAULT_WHISPER_MODELS_DIR: &str = "/home/llm/models/whisperx_models";
+const DEFAULT_WHISPER_OUTPUT_DIR: &str = "/home/llm/whisper_api/output";
+const DEFAULT_WHISPER_OUTPUT_FORMAT: &str = "txt";
 const DEFAULT_JOB_RETENTION_HOURS: u64 = 48;
 const DEFAULT_CLEANUP_INTERVAL_HOURS: u64 = 1;
+
+// Valid output formats for WhisperX
+const VALID_OUTPUT_FORMATS: [&str; 6] = ["srt", "vtt", "txt", "tsv", "json", "aud"];
 
 // Environment variable names
 const ENV_JOB_RETENTION_HOURS: &str = "WHISPER_JOB_RETENTION_HOURS";
 const ENV_CLEANUP_INTERVAL_HOURS: &str = "WHISPER_CLEANUP_INTERVAL_HOURS";
+const ENV_WHISPER_OUTPUT_DIR: &str = "WHISPER_OUTPUT_DIR";
+const ENV_WHISPER_OUTPUT_FORMAT: &str = "WHISPER_OUTPUT_FORMAT";
 
 /// Configuration for the WhisperX command
 #[derive(Clone, Debug)]
@@ -32,15 +39,54 @@ pub struct WhisperConfig {
     pub command_path: String,
     /// Path to the models directory
     pub models_dir: String,
+    /// Path to the output directory
+    pub output_dir: String,
+    /// Default output format
+    pub output_format: String,
+}
+
+impl WhisperConfig {
+    /// Validates if a given format is in the list of allowed output formats
+    pub fn validate_output_format(format: &str) -> Result<(), QueueError> {
+        if VALID_OUTPUT_FORMATS.contains(&format) {
+            Ok(())
+        } else {
+            Err(QueueError::InvalidOutputFormat(format.to_string()))
+        }
+    }
 }
 
 impl Default for WhisperConfig {
     fn default() -> Self {
-        Self {
-            command_path: std::env::var("WHISPER_CMD")
-                .unwrap_or_else(|_| String::from(DEFAULT_WHISPER_CMD)),
-            models_dir: std::env::var("WHISPER_MODELS_DIR")
-                .unwrap_or_else(|_| String::from(DEFAULT_WHISPER_MODELS_DIR)),
+        let output_format = std::env::var(ENV_WHISPER_OUTPUT_FORMAT)
+            .unwrap_or_else(|_| String::from(DEFAULT_WHISPER_OUTPUT_FORMAT));
+
+        // Validate the output format from env var
+        if WhisperConfig::validate_output_format(output_format.as_str()).is_err() {
+            warn!(
+                "Invalid output format in environment variable: {}. Using default: {}",
+                output_format, DEFAULT_WHISPER_OUTPUT_FORMAT
+            );
+
+            Self {
+                command_path: std::env::var("WHISPER_CMD")
+                    .unwrap_or_else(|_| String::from(DEFAULT_WHISPER_CMD)),
+                models_dir: std::env::var("WHISPER_MODELS_DIR")
+                    .unwrap_or_else(|_| String::from(DEFAULT_WHISPER_MODELS_DIR)),
+                output_dir: std::env::var(ENV_WHISPER_OUTPUT_DIR)
+                    .unwrap_or_else(|_| String::from(DEFAULT_WHISPER_OUTPUT_DIR)),
+                output_format: DEFAULT_WHISPER_OUTPUT_FORMAT.to_string(),
+            }
+        } else {
+            Self {
+                command_path: std::env::var("WHISPER_CMD")
+                    .unwrap_or_else(|_| String::from(DEFAULT_WHISPER_CMD)),
+                models_dir: std::env::var("WHISPER_MODELS_DIR")
+                    .unwrap_or_else(|_| String::from(DEFAULT_WHISPER_MODELS_DIR)),
+                output_dir: std::env::var(ENV_WHISPER_OUTPUT_DIR)
+                    .unwrap_or_else(|_| String::from(DEFAULT_WHISPER_OUTPUT_DIR)),
+                output_format,
+            }
         }
     }
 }
@@ -78,6 +124,8 @@ pub struct TranscriptionJob {
     pub prompt: String,
     /// Hugging Face token for accessing diarization models
     pub hf_token: Option<String>,
+    /// Output format for transcription results
+    pub output_format: Option<String>,
 }
 
 /// Job metadata saved separately from the job itself
@@ -133,6 +181,9 @@ pub enum QueueError {
     /// Cannot cancel job in its current state
     #[error("Cannot cancel job: {0}")]
     CannotCancelJob(String),
+    /// Invalid output format specified
+    #[error("Invalid output format: {0}")]
+    InvalidOutputFormat(String),
 }
 
 /// Internal state of the queue manager
@@ -164,6 +215,7 @@ pub struct QueueManager {
 }
 
 impl QueueManager {
+
     /// Create a new queue manager instance and start background processing
     pub fn new(config: WhisperConfig) -> Arc<Mutex<Self>> {
         // Create channels for job processing
@@ -312,22 +364,36 @@ impl QueueManager {
     ) -> Result<TranscriptionResult, QueueError> {
         debug!("Processing job {}", job.id);
 
+        // Validate output format if provided
+        // This determines the output file format (e.g., srt, vtt, txt, json)
+        let output_format = match &job.output_format {
+            Some(format) => {
+                WhisperConfig::validate_output_format(format.as_str())?;
+                format.as_str()
+            }
+            None => &config.output_format,
+        };
+
         // Execute whisper command
         let mut command = Command::new(&config.command_path);
-        
+
         command
-            .arg("-m")
-            .arg(format!("{}/ggml-{}.bin", config.models_dir, job.model))
-            .arg("-l")
-            .arg(&job.language)
-            .arg("-f")
             .arg(&job.audio_file)
-            .arg("-oj");
-            
+            .arg("--model")
+            .arg(&job.model)
+            .arg("--model_dir")
+            .arg(format!("{}/{}", config.models_dir, job.model))
+            .arg("--language")
+            .arg(&job.language)
+            .arg("--output_dir")
+            .arg(&config.output_dir)
+            .arg("--output_format")
+            .arg(output_format);
+
         // Add diarization if requested
         if job.diarize {
             command.arg("--diarize");
-            
+
             // Add HF token if available for diarization models
             if let Some(token) = &job.hf_token {
                 if !token.is_empty() {
@@ -335,13 +401,23 @@ impl QueueManager {
                 }
             }
         }
-        
+
         // Add initial prompt if provided
         if !job.prompt.is_empty() {
             command.arg("--initial_prompt").arg(&job.prompt);
         }
-        
-        let output = command.output()
+
+        // WhisperX will name the output file based on the input audio filename
+        // For example, if input is "recording.wav", output will be "recording.srt"
+        let audio_file_name = Path::new(&job.audio_file)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("audio");
+        let output_filename = format!("{}.{}", audio_file_name, output_format);
+        let output_file_path = Path::new(&config.output_dir).join(&output_filename);
+
+        let output = command
+            .output()
             .map_err(|e| QueueError::TranscriptionError(format!("Failed to run command: {}", e)))?;
 
         if !output.status.success() {
@@ -349,16 +425,25 @@ impl QueueManager {
             return Err(QueueError::TranscriptionError(error));
         }
 
-        // Parse the JSON output
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let result: TranscriptionResult = serde_json::from_str(&stdout)
-            .map_err(|e| QueueError::TranscriptionError(format!("Failed to parse JSON: {}", e)))?;
+        // Read the result from the output file
+        let file_content = fs::read_to_string(&output_file_path).map_err(|e| {
+            QueueError::TranscriptionError(format!("Failed to read output file: {}", e))
+        })?;
 
-        // Save result to a file in the job folder
-        let result_path = job.folder_path.join("transcript.json");
-        let result_json =
-            serde_json::to_string_pretty(&result).map_err(|e| QueueError::JsonError(e))?;
-        fs::write(&result_path, result_json).map_err(|e| QueueError::IoError(e))?;
+        // Copy the transcription result to the job's folder for convenience and persistence
+        // This ensures the result is available even if the main output directory is cleaned
+        // The copied file is named "transcript.{format}" regardless of the input filename
+        let job_result_path = job
+            .folder_path
+            .join(format!("transcript.{}", output_format));
+        fs::write(&job_result_path, &file_content).map_err(|e| QueueError::IoError(e))?;
+
+        // Create result with the file content as-is
+        let result = TranscriptionResult {
+            text: file_content,
+            language: job.language.clone(),
+            segments: Vec::new(),
+        };
 
         Ok(result)
     }
@@ -452,6 +537,11 @@ impl QueueManager {
     pub async fn add_job(&self, job: TranscriptionJob) -> Result<(), QueueError> {
         let job_id = job.id.clone();
 
+        // Validate output format if provided
+        if let Some(format) = &job.output_format {
+            WhisperConfig::validate_output_format(format.as_str())?;
+        }
+
         {
             // Acquire mutex lock to safely modify state
             // This ensures thread-safe access to the job queue and other state
@@ -522,28 +612,27 @@ impl QueueManager {
                     // Remove the job from the queue if it's there
                     state.queue.retain(|job| job.id != job_id);
 
-                    // Get folder path from job metadata
-                    if let Some(metadata) = state.job_metadata.get(job_id) {
-                        let folder_path = metadata.folder_path.clone();
-                        drop(state); // Release lock before filesystem operations
+                    // Get folder path from job metadata and clone it
+                    let folder_path = if let Some(metadata) = state.job_metadata.get(job_id) {
+                        Some(metadata.folder_path.clone())
+                    } else {
+                        None
+                    };
 
-                        // Remove job files
-                        if let Err(e) = fs::remove_dir_all(&folder_path) {
+                    // Remove job from tracking
+                    state.statuses.remove(job_id);
+                    state.results.remove(job_id);
+                    state.job_metadata.remove(job_id);
+
+                    // Drop the lock before filesystem operations
+                    drop(state);
+
+                    // Remove job files if we have a path
+                    if let Some(path) = folder_path {
+                        if let Err(e) = fs::remove_dir_all(&path) {
                             error!("Failed to remove folder for canceled job {}: {}", job_id, e);
                             // Continue with cancellation even if file removal fails
                         }
-
-                        // Re-acquire lock to update state
-                        let mut state = self.state.lock().await;
-                        // Remove job from tracking
-                        state.statuses.remove(job_id);
-                        state.results.remove(job_id);
-                        state.job_metadata.remove(job_id);
-                    } else {
-                        // No folder path found, but still remove job from tracking
-                        state.statuses.remove(job_id);
-                        state.results.remove(job_id);
-                        state.job_metadata.remove(job_id);
                     }
 
                     info!("Canceled job: {}", job_id);

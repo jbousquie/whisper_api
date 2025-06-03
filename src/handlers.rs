@@ -17,7 +17,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-const DEFAULT_TEMP_DIR: &str = "/tmp/whisper_api";
+const DEFAULT_TEMP_DIR: &str = "/home/llm/whisper_api/tmp";
 const DEFAULT_LANGUAGE: &str = "fr";
 const DEFAULT_MODEL: &str = "large-v3";
 
@@ -88,6 +88,7 @@ pub async fn transcribe(
     let mut diarize = true;  // Default: enable speaker diarization
     let mut prompt = String::new();  // Default: empty prompt
     let mut hf_token = None::<String>;  // Default: no HuggingFace token
+    let mut output_format = None::<String>;  // Default: use config/environment value
     let mut audio_file: Option<PathBuf> = None;
     let mut folder_path: Option<PathBuf> = None;
     let mut job_id = String::new();
@@ -108,7 +109,7 @@ pub async fn transcribe(
             .unwrap_or_default();
 
         match field_name.as_str() {
-            "language" | "model" | "prompt" | "hf_token" => {
+            "language" | "model" | "prompt" | "hf_token" | "output_format" => {
                 // Simplified reading of text parameters
                 let mut value = String::new();
                 while let Some(Ok(chunk)) = field.next().await {
@@ -124,6 +125,17 @@ pub async fn transcribe(
                         "model" => model = value,
                         "prompt" => prompt = value,
                         "hf_token" => hf_token = Some(value),
+                        "output_format" => {
+                            // Validate output format
+                            if ["srt", "vtt", "txt", "tsv", "json", "aud"].contains(&value.as_str()) {
+                                output_format = Some(value);
+                            } else {
+                                error!("Invalid output format: {}", value);
+                                return HttpResponse::BadRequest().json(
+                                    serde_json::json!({ "error": format!("Invalid output format: {}. Valid formats are: srt, vtt, txt, tsv, json, aud", value) }),
+                                );
+                            }
+                        },
                         _ => {}
                     }
                 }
@@ -239,6 +251,7 @@ pub async fn transcribe(
         diarize,  // Add diarization parameter
         prompt,   // Add initial prompt parameter
         hf_token, // Add HuggingFace token for diarization
+        output_format, // Add output format parameter
     };
 
     // Add job to queue

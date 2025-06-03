@@ -38,6 +38,8 @@ The application can be configured using the following environment variables:
 |----------|-------------|---------------|
 | `WHISPER_CMD` | Path to the WhisperX command | `whisperx` |
 | `WHISPER_MODELS_DIR` | Path to the models directory | `/models` |
+| `WHISPER_OUTPUT_DIR` | Directory for WhisperX to store output files | `/home/llm/whisper_api/output` |
+| `WHISPER_OUTPUT_FORMAT` | Default output format for transcriptions | `txt` |
 | `WHISPER_TMP_FILES` | Directory for storing temporary files | `/tmp/whisper_api` |
 | `WHISPER_API_HOST` | Host address to bind the server | `127.0.0.1` |
 | `WHISPER_API_PORT` | Port for the HTTP server | `8181` |
@@ -63,6 +65,7 @@ POST /transcribe
 - `diarize`: Whether to apply speaker diarization (optional, default: true)
 - `prompt`: Initial text prompt for transcription (optional, default: "")
 - `hf_token`: Hugging Face API token for accessing diarization models (optional, required when diarization is enabled)
+- `output_format`: Format of transcription output (optional, values: "srt", "vtt", "txt", "tsv", "json", "aud", default: "txt")
 
 **Response**:
 ```json
@@ -138,6 +141,7 @@ curl -X POST "http://localhost:8181/transcribe" \
   -F "diarize=true" \
   -F "prompt=Meeting transcript:" \
   -F "hf_token=YOUR_HUGGINGFACE_TOKEN" \
+  -F "output_format=txt" \
   -F "file=@/path/to/audio.wav"
 ```
 
@@ -162,6 +166,13 @@ curl -X POST "http://localhost:8181/transcribe" \
 curl -X POST "http://localhost:8181/transcribe" \
   -F "diarize=true" \
   -F "hf_token=YOUR_HUGGINGFACE_TOKEN" \
+  -F "file=@/path/to/audio.wav"
+```
+
+#### Specify Output Format
+```bash
+curl -X POST "http://localhost:8181/transcribe" \
+  -F "output_format=srt" \
   -F "file=@/path/to/audio.wav"
 ```
 

@@ -93,14 +93,14 @@ impl Default for WhisperConfig {
 
 /// Job status enum for tracking the progress of transcription jobs
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "status", content = "data")]
+#[serde(tag = "status")]
 pub enum JobStatus {
     /// Job is waiting in the queue
     Queued,
     /// Job is currently being processed
     Processing,
-    /// Job is completed with transcription result
-    Completed(String),
+    /// Job is completed successfully
+    Completed,
     /// Job failed with error message
     Failed(String),
 }
@@ -284,7 +284,7 @@ impl QueueManager {
                             info!("Job {} completed successfully", job_id);
                             state_guard
                                 .statuses
-                                .insert(job_id.clone(), JobStatus::Completed(result.text.clone()));
+                                .insert(job_id.clone(), JobStatus::Completed);
                             state_guard.results.insert(job_id.clone(), result);
                         }
                         Err(e) => {
@@ -589,7 +589,7 @@ impl QueueManager {
 
         // Check job status first
         match state.statuses.get(job_id) {
-            Some(JobStatus::Completed(_)) => state
+            Some(JobStatus::Completed) => state
                 .results
                 .get(job_id)
                 .cloned()
@@ -641,7 +641,7 @@ impl QueueManager {
                 JobStatus::Processing => Err(QueueError::CannotCancelJob(
                     "Cannot cancel a job that is currently processing".to_string(),
                 )),
-                JobStatus::Completed(_) | JobStatus::Failed(_) => {
+                JobStatus::Completed | JobStatus::Failed(_) => {
                     // For completed/failed jobs, we'll just clean them up
                     drop(state); // Release lock before calling another method
                     self.cleanup_job(job_id).await
@@ -659,7 +659,7 @@ impl QueueManager {
         // Check if job exists
         if let Some(status) = state.statuses.get(job_id) {
             // Only enforce "completed" check for manual cleanup, not for expiration cleanup
-            if !matches!(status, JobStatus::Completed(_) | JobStatus::Failed(_)) {
+            if !matches!(status, JobStatus::Completed | JobStatus::Failed(_)) {
                 return Err(QueueError::QueueError(
                     "Cannot clean up a job that is still in progress".to_string(),
                 ));

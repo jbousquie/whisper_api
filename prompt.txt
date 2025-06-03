@@ -1,0 +1,198 @@
+Please read carefully the README.md and the whisperx.md files. Then read all the code within handler.rs and queue_manager.rs and take a good attention to the inline comments. Finally, compose a very detailed prompt about what and how does this project with technical details so you could use this prompt to understand the current project status at once. Please edit the prompt.txt file and write this detailed prompt under the line with stars "********************"
+
+***********************************************************************************************************************************************************************
+
+# Whisper API: A Rust-based Queue Service for Audio Transcription with WhisperX
+
+## Project Overview
+This project implements a robust HTTP service for audio transcription using WhisperX. The service is built in Rust using Actix-web framework and follows a queue-based architecture that handles multiple transcription requests asynchronously while processing them sequentially to manage resource utilization.
+
+## Core Components
+
+### 1. Queue Manager (`queue_manager.rs`)
+- Implements a FIFO transcription job queue with thread-safe access via `Arc<Mutex<>>` 
+- Uses Tokio's asynchronous runtime for non-blocking operations
+- Manages one job at a time to prevent resource contention
+- Tracks job status (Queued, Processing, Completed, Failed) through a state machine model
+- Handles job lifecycles from submission to cleanup
+- Implements automatic job expiration and cleanup after configurable retention periods
+- Provides API for job status checks, result retrieval, and job cancellation
+- Validates and processes various output formats (srt, vtt, txt, tsv, json, aud)
+
+Key Functions:
+- `new()`: Creates a new queue manager, initializes the job channel, and starts background processors
+- `validate_output_format()`: Validates that the requested output format is supported
+- `add_job()`: Adds a transcription job to the queue and triggers processing if no jobs are running
+- `get_job_status()`: Retrieves the current status of a job by ID
+- `get_job_result()`: Retrieves the completed transcription result for a job
+- `cancel_job()`: Cancels a pending job and cleans up associated resources
+- `cleanup_job()`: Removes job files and metadata after completion
+- `start_job_processor()`: Background task that processes jobs sequentially from the queue
+- `process_transcription()`: Core function that executes WhisperX and handles results
+- `cleanup_old_jobs()`: Periodically removes expired jobs based on retention policy
+
+### 2. HTTP Handlers (`handlers.rs`)
+- Exposes RESTful endpoints using Actix-web
+- Handles multipart form data for audio file uploads
+- Generates unique job IDs using UUIDs
+- Creates job-specific temporary directories for file isolation
+- Manages file uploads with proper error handling and cleanup
+- Passes transcription parameters to WhisperX (language, model, diarization, etc.)
+- Provides endpoints for job status checks, result retrieval, and job cancellation
+
+Key Functions:
+- `transcribe()`: Main endpoint handler that processes POST requests with audio files
+- `generate_unique_filename()`: Creates unique filenames and job folders for isolation
+- `transcription_status()`: Handles GET requests to check job status
+- `transcription_result()`: Serves completed transcription results and triggers cleanup
+- `cancel_transcription()`: Processes DELETE requests to cancel pending jobs
+- `cleanup_folder()`: Helper function to remove job directories when no longer needed
+
+### 3. WhisperX Integration
+- Executes WhisperX as an external command-line process
+- Supports configurable WhisperX parameters:
+  - Model selection (tiny to large-v3)
+  - Language specification 
+  - Speaker diarization (with optional Hugging Face token)
+  - Initial prompts for context
+  - Various output formats
+- Parses and returns transcription results to clients
+- Handles WhisperX command execution errors
+
+## Technical Implementation Details
+
+### Detailed Architecture
+1. **HTTP Handler to Queue Manager Communication**:
+   - HTTP handlers are registered in Actix-web and receive client requests
+   - The QueueManager is wrapped in `Arc<Mutex<>>` and injected as application state
+   - Handlers acquire a lock on the QueueManager to perform operations (add_job, get_status, etc.)
+   - All operations are asynchronous using Tokio's async/await
+   - Example flow: `transcribe() -> queue_manager.lock().await -> add_job() -> release lock`
+
+2. **Job Processing Pipeline**:
+   - A mpsc (multi-producer, single-consumer) channel connects job submission to processing
+   - The sender (`job_tx`) is used by `add_job()` to queue jobs for processing
+   - A dedicated task spawned in `start_job_processor()` listens on the receiver (`job_rx`)
+   - This task runs in the background, independent of HTTP request lifecycle
+   - Processing happens sequentially to prevent GPU resource contention
+
+3. **State Management**:
+   - The QueueState struct holds shared state:
+     - `queue`: VecDeque for pending jobs (FIFO)
+     - `statuses`: HashMap mapping job IDs to current status
+     - `results`: HashMap storing completed transcription results
+     - `processing`: Boolean flag indicating if a job is currently running
+     - `job_metadata`: HashMap with folder paths and creation timestamps
+   - All state access is protected by the Mutex to prevent race conditions
+
+### Job Processing Workflow with Function Calls
+1. Client submits audio via POST to `/transcribe` (handled by `transcribe()`)
+2. `generate_unique_filename()` creates a UUID and job directory
+3. Audio file is saved to this folder
+4. `TranscriptionJob` struct is created with parameters and passed to `add_job()`
+5. `add_job()` stores job metadata, adds job to queue, updates status to Queued
+6. `add_job()` calls `check_and_start_next_job()` which:
+   - Checks if a job is already processing
+   - If not, dequeues the next job and sends it to the job channel
+7. Background processor in `start_job_processor()` receives the job
+8. Processor calls `process_transcription()` which:
+   - Validates output format with `validate_output_format()`
+   - Builds WhisperX command with appropriate parameters
+   - Executes command and waits for completion
+   - Reads output file and creates `TranscriptionResult`
+   - Updates job status to Completed or Failed
+9. Client calls `transcription_status()` (GET `/transcription/{job_id}`) to check status
+10. When complete, client calls `transcription_result()` (GET `/transcription/{job_id}/result`)
+11. `transcription_result()` returns the result and calls `cleanup_job()` to remove files
+12. If client doesn't retrieve result, `cleanup_old_jobs()` eventually removes expired jobs
+
+### Security and Privacy Implementation
+- **File Isolation**:
+  - Each job gets a unique UUID directory under the temp directory
+  - All job files (input audio, output transcriptions) are contained in this directory
+  - Directory paths are not exposed to clients, only job IDs
+  - UUID-based naming prevents path traversal attacks
+
+- **Mandatory Cleanup Processes**:
+  - **Immediate Cleanup**: `transcription_result()` calls `cleanup_job()` after successful delivery
+  - **Error Cleanup**: All error paths call `cleanup_folder()` to prevent orphaned files
+  - **Cancellation Cleanup**: `cancel_job()` removes all job resources immediately
+  - **Scheduled Cleanup**: `start_cleanup_task()` spawns a periodic task that:
+    - Runs every `CLEANUP_INTERVAL_HOURS` (default: 1 hour)
+    - Calls `cleanup_old_jobs()` to identify expired jobs
+    - Removes jobs older than `JOB_RETENTION_HOURS` (default: 48 hours)
+  - Cleanup is mandatory for privacy and security reasons, ensuring sensitive audio data and transcriptions don't persist longer than necessary
+
+- **Resource Protection**:
+  - Sequential job processing prevents GPU resource exhaustion
+  - Timeout mechanisms in HTTP handlers prevent hung connections
+  - Error handling ensures resources are released even on failures
+  - Mutex protection prevents concurrent access to shared state
+
+### Concurrency Model
+- Single job processor to prevent resource contention
+- Multiple concurrent HTTP requests handled by Actix
+- Thread-safe queue access with `Arc<Mutex<>>`
+- Tokio async runtime for non-blocking operations
+- Channel-based job dispatch between request handlers and processor
+- Lock patterns designed to minimize contention:
+  - Short-lived locks in HTTP handlers
+  - Longer locks only during actual processing
+  - Careful lock dropping before calling other async functions
+
+### Error Handling
+- Comprehensive error enum (`QueueError`) with variants for different failure modes
+- Clean error propagation through Result types
+- Proper cleanup on failures to prevent resource leaks
+- HTTP status codes mapped to appropriate error conditions
+- Detailed error messages for debugging
+- Error logging at appropriate severity levels
+
+### Configuration
+- Environment variable-based configuration with sensible defaults
+- Configurable paths for WhisperX command, models, and output
+- Adjustable job retention periods and cleanup intervals
+- Configurable default parameters (language, model, etc.)
+- All configuration is loaded at startup in the respective Default implementations
+
+### API Endpoints with Function Flow
+- **POST `/transcribe`**: 
+  - Handler: `transcribe()`
+  - Flow: parse multipart form → create job folder → save audio → `add_job()` → return job ID
+  
+- **GET `/transcription/{job_id}`**: 
+  - Handler: `transcription_status()`
+  - Flow: extract job ID → `get_job_status()` → return status JSON
+  
+- **GET `/transcription/{job_id}/result`**: 
+  - Handler: `transcription_result()`
+  - Flow: extract job ID → `get_job_result()` → `cleanup_job()` → return result JSON
+  
+- **DELETE `/transcription/{job_id}`**: 
+  - Handler: `cancel_transcription()`
+  - Flow: extract job ID → `cancel_job()` → return success/error
+
+## Current Project Status
+- Core functionality is implemented and working
+- Queue manager with sequential job processing is operational
+- RESTful API endpoints are functional
+- WhisperX integration is complete with support for all major parameters
+- Job lifecycle management (queuing, processing, result retrieval, cleanup) is implemented
+- Proper error handling and resource management are in place
+
+## Potential Improvements
+- Enhanced logging for better debugging and monitoring
+- Metrics collection for performance analysis
+- Health check endpoints for service monitoring
+- Rate limiting to prevent abuse
+- Authentication for secure API access
+- Support for batch processing of multiple audio files
+- More granular control over WhisperX parameters
+- Streaming results for long-running transcriptions
+
+## Technical Requirements
+- Rust with Tokio async runtime
+- WhisperX installed and accessible
+- Sufficient disk space for temporary files
+- Appropriate GPU resources for WhisperX processing
+- Proper environment variable configuration

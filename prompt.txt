@@ -6,7 +6,7 @@ Please read carefully the README.md and the whisperx.md files. Then read all the
 # Whisper API: A Robust Rust-based API for Audio Transcription with WhisperX
 
 ## Project Overview
-This project implements a high-performance HTTP API for audio transcription using WhisperX. Built in Rust with the Actix-web framework, it features a modular architecture with a queue-based processing system that handles multiple concurrent requests while managing system resources efficiently through sequential processing. The API provides clients with an asynchronous workflow for submitting audio files, monitoring transcription progress, and retrieving results with optional speaker diarization.
+This project implements a high-performance HTTP API for audio transcription using WhisperX. Built in Rust with the Actix-web framework, it features a modular architecture with a queue-based processing system that handles multiple concurrent requests while managing system resources efficiently through sequential processing. The API provides clients with an asynchronous workflow for submitting audio files, monitoring transcription progress, and retrieving results with optional speaker diarization. All API endpoints are protected by token-based authentication, ensuring secure access to the transcription service.
 
 ## Core Architecture Components
 
@@ -19,6 +19,7 @@ The codebase follows a modular design pattern with clear separation of concerns:
   - **handlers/mod.rs**: Defines the module structure and re-exports handlers for use in main.rs
   - **handlers/form.rs**: Handles multipart form data extraction, parameter validation, and file processing with detailed error handling and HuggingFace token fallback mechanisms
   - **handlers/routes.rs**: Implements the four main API endpoints (transcribe, transcription_status, transcription_result, cancel_transcription) with proper request handling and response formatting
+  - **handlers/authentication.rs**: Implements request authentication middleware that validates Bearer tokens in the Authorization header before processing any API request
 - **models.rs**: Defines data structures for requests, responses, and internal state
 - **queue_manager.rs**: Implements the job queue and transcription processing pipeline
 - **main.rs**: Initializes the application, configures routes, and starts the HTTP server
@@ -35,6 +36,7 @@ The codebase follows a modular design pattern with clear separation of concerns:
 
 ### 3. HTTP Request Handling
 - RESTful API endpoints implemented with Actix-web for high performance
+- Bearer token authentication required for all API endpoints
 - Multipart form data handling for audio file uploads (supports files up to 512MB)
 - Unique job IDs generated using UUIDs to prevent collisions
 - Job-specific temporary directories for secure file isolation
@@ -66,6 +68,7 @@ The codebase follows a modular design pattern with clear separation of concerns:
    - Uses `Arc<Mutex<QueueState>>` to provide thread-safe access to shared state
    - Implements a single-producer, multiple-consumer (mpsc) channel for job dispatching
    - The `processing` flag ensures only one job runs at a time
+   - Provides queue position information for jobs waiting in the queue
    - Lock acquisition patterns carefully designed to prevent deadlocks:
      ```rust
      let queue_manager = queue_manager.lock().await;
@@ -80,6 +83,7 @@ The codebase follows a modular design pattern with clear separation of concerns:
 
 ### Job Processing Workflow
 1. **Submission** (`POST /transcribe`):
+   - Client authenticates with Bearer token in the Authorization header
    - Client submits audio file and parameters via multipart form
    - Server validates input and parameters
    - Unique directory created for job isolation
@@ -94,22 +98,41 @@ The codebase follows a modular design pattern with clear separation of concerns:
    - Job status updated based on success or failure
 
 3. **Status Checking** (`GET /transcription/{job_id}`):
+   - Client authenticates with Bearer token in the Authorization header
    - Client polls status endpoint using job ID
    - Server responds with current status (Queued, Processing, Completed, Failed)
+   - For queued jobs, includes position in queue (1-based index)
    - No file system operations during status checks for efficiency
 
 4. **Result Retrieval** (`GET /transcription/{job_id}/result`):
+   - Client authenticates with Bearer token in the Authorization header
    - Client requests final transcription when status is Completed
    - Server returns structured JSON with transcription text and metadata
    - Temporary files automatically cleaned up after successful delivery
    - Error handling for cases where job is not complete or has failed
 
 5. **Cancellation** (`DELETE /transcription/{job_id}`):
+   - Client authenticates with Bearer token in the Authorization header
    - Client can cancel queued jobs (not applicable to in-progress jobs)
    - Server removes job from queue and cleans up associated resources
    - Confirmation or error message returned based on outcome
 
 ### Security and Privacy Features
+- **Authentication**:
+   ```rust
+   // Check if Authorization header exists and contains a Bearer token
+   if let Some(auth_header) = req.headers().get(header::AUTHORIZATION) {
+       if let Ok(auth_str) = auth_header.to_str() {
+           if auth_str.starts_with("Bearer ") {
+               let token = &auth_str[7..]; // Skip "Bearer " prefix
+               // Token validation logic here
+               return Ok(());
+           }
+       }
+   }
+   // Return unauthorized error if authentication fails
+   ```
+
 - **Isolated File Storage**:
    ```rust
    // Each job gets a unique UUID-based directory
@@ -237,6 +260,7 @@ The codebase follows a modular design pattern with clear separation of concerns:
 
 ### 1. Submit Transcription (`POST /transcribe`)
 - **Purpose**: Upload audio file and start transcription
+- **Headers**: `Authorization: Bearer <token>` (required)
 - **Form Parameters**:
   - `file`: Audio file (required, max 512MB)
   - `language`: Language code (optional, default: "fr")
@@ -246,26 +270,31 @@ The codebase follows a modular design pattern with clear separation of concerns:
   - `hf_token`: HuggingFace token for diarization (optional, if not provided will attempt to read from `hf_token.txt` file)
   - `output_format`: Result format (optional, default: "txt")
 - **Response**: Job ID and status URL
-- **Error Handling**: File size validation, format validation, server errors
+- **Error Handling**: File size validation, format validation, server errors, authentication failures
 
 ### 2. Check Status (`GET /transcription/{job_id}`)
 - **Purpose**: Monitor transcription progress
 - **Path Parameters**: `job_id` (UUID from submission)
-- **Response**: Current job status (Queued, Processing, Completed, Failed)
-- **Error Handling**: Job not found, server errors
+- **Headers**: `Authorization: Bearer <token>` (required)
+- **Response**: 
+  - Current job status (Queued, Processing, Completed, Failed)
+  - Queue position (only for Queued jobs, 1-based index)
+- **Error Handling**: Job not found, server errors, authentication failures
 
 ### 3. Get Result (`GET /transcription/{job_id}/result`)
 - **Purpose**: Retrieve completed transcription
 - **Path Parameters**: `job_id` (UUID from submission)
+- **Headers**: `Authorization: Bearer <token>` (required)
 - **Response**: Transcription text, language, and segments
-- **Error Handling**: Job not found, job not completed, server errors
+- **Error Handling**: Job not found, job not completed, server errors, authentication failures
 - **Side Effects**: Triggers cleanup of job files after delivery
 
 ### 4. Cancel Job (`DELETE /transcription/{job_id}`)
 - **Purpose**: Cancel pending transcription
 - **Path Parameters**: `job_id` (UUID from submission)
+- **Headers**: `Authorization: Bearer <token>` (required)
 - **Response**: Success confirmation or error message
-- **Error Handling**: Job not found, job already processing, server errors
+- **Error Handling**: Job not found, job already processing, server errors, authentication failures
 - **Side Effects**: Removes job files if successfully canceled
 
 ## Deployment Requirements
@@ -287,14 +316,16 @@ The codebase follows a modular design pattern with clear separation of concerns:
 ## Current Status and Limitations
 - **Fully Implemented Features**:
   - Complete API with all endpoints functional
-  - Queue management with sequential processing
+  - Authentication middleware requiring Bearer tokens for all requests
+  - Queue management with sequential processing and position tracking
   - File isolation and cleanup processes
   - Error handling and logging
   - Configuration via environment variables
   - HuggingFace token handling with fallback mechanisms
 
 - **Limitations**:
-  - No authentication or rate limiting (open API)
+  - Basic authentication with dummy token verification (any token accepted)
+  - No rate limiting mechanisms
   - No streaming results for long transcriptions
   - Limited metrics and monitoring capabilities
   - No built-in health checks or readiness probes
@@ -302,7 +333,8 @@ The codebase follows a modular design pattern with clear separation of concerns:
   - Audio file limited to 512MB maximum size
 
 ## Future Enhancement Opportunities
-- Authentication and authorization system
+- Enhanced authentication with proper token validation
+- Advanced authorization with role-based access control
 - Metrics collection for performance monitoring
 - Health check endpoints for deployment monitoring
 - Rate limiting to prevent API abuse

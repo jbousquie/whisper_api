@@ -1,10 +1,18 @@
-mod handlers;
-mod queue_manager;
-
 use actix_web::{web, App, HttpServer};
 use env_logger::Env;
-use handlers::{transcribe, transcription_result, transcription_status, cancel_transcription, HandlerConfig};
 use log::{info, warn};
+
+// Import our modules
+mod config;
+mod error;
+mod file_utils;
+mod handlers;
+mod models;
+mod queue_manager;
+
+// Import the types we need
+use config::HandlerConfig;
+use handlers::{transcribe, transcription_result, transcription_status, cancel_transcription};
 use queue_manager::{QueueManager, WhisperConfig};
 
 const DEFAULT_WHISPER_API_HOST: &str = "127.0.0.1";

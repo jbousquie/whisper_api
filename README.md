@@ -4,7 +4,7 @@ A frontend service for audio transcription using WhisperX.
 
 ## Architecture
 
-The Whisper API follows a queue-based architecture:
+The Whisper API follows a queue-based architecture with modular components:
 
 1. **HTTP Handler**:
    - Receives transcription requests containing audio files
@@ -40,7 +40,7 @@ The application can be configured using the following environment variables:
 | `WHISPER_MODELS_DIR` | Path to the models directory | `/models` |
 | `WHISPER_OUTPUT_DIR` | Directory for WhisperX to store output files | `/home/llm/whisper_api/output` |
 | `WHISPER_OUTPUT_FORMAT` | Default output format for transcriptions | `txt` |
-| `WHISPER_TMP_FILES` | Directory for storing temporary files | `/tmp/whisper_api` |
+| `WHISPER_TMP_FILES` | Directory for storing temporary files | `/home/llm/whisper_api/tmp` |
 | `WHISPER_API_HOST` | Host address to bind the server | `127.0.0.1` |
 | `WHISPER_API_PORT` | Port for the HTTP server | `8181` |
 | `WHISPER_API_TIMEOUT` | Client disconnect timeout in seconds | `480` |
@@ -48,7 +48,8 @@ The application can be configured using the following environment variables:
 | `WHISPER_JOB_RETENTION_HOURS` | Number of hours to keep job files before automatic cleanup | `48` |
 | `WHISPER_CLEANUP_INTERVAL_HOURS` | Interval in hours between cleanup runs | `1` |
 | `RUST_LOG` | Logging level (error, warn, info, debug, trace) | `info` |
-| `HF_TOKEN` | Hugging Face API token for diarization models access (can alternatively be passed per-request) | None |
+| `HF_TOKEN` | Hugging Face API token for diarization models access (can alternatively be passed per-request or loaded from file) | None |
+| `WHISPER_HF_TOKEN_FILE` | Path to file containing Hugging Face API token | `/home/llm/whisper_api/hf_token.txt` |
 
 ## API Endpoints
 
@@ -64,7 +65,7 @@ POST /transcribe
 - `model`: Model name (optional, default: "large-v3")
 - `diarize`: Whether to apply speaker diarization (optional, default: true)
 - `prompt`: Initial text prompt for transcription (optional, default: "")
-- `hf_token`: Hugging Face API token for accessing diarization models (optional, required when diarization is enabled)
+- `hf_token`: Hugging Face API token for accessing diarization models (optional, if not provided will try to load from `hf_token.txt` file). Required for speaker diarization to work properly.
 - `output_format`: Format of transcription output (optional, values: "srt", "vtt", "txt", "tsv", "json", "aud", default: "txt")
 
 **Response**:
@@ -145,6 +146,8 @@ curl -X POST "http://localhost:8181/transcribe" \
   -F "file=@/path/to/audio.wav"
 ```
 
+Note: The maximum file size accepted is 512 MB.
+
 ### Examples
 
 #### Disable Speaker Diarization
@@ -169,12 +172,25 @@ curl -X POST "http://localhost:8181/transcribe" \
   -F "file=@/path/to/audio.wav"
 ```
 
+Note: If you don't provide the `hf_token` parameter, the system will attempt to read the token from the file specified by `WHISPER_HF_TOKEN_FILE` (default: `/home/llm/whisper_api/hf_token.txt`). If no token is available (file missing, empty, or unreadable) and diarization is requested, diarization will be automatically disabled with a warning in the logs. This ensures transcription jobs can proceed even without a token, but without speaker identification.
+
 #### Specify Output Format
 ```bash
 curl -X POST "http://localhost:8181/transcribe" \
   -F "output_format=srt" \
   -F "file=@/path/to/audio.wav"
 ```
+
+## File Structure
+
+The API is organized into modular components:
+
+- **handlers/**: HTTP request handlers and form processing
+- **models.rs**: Data structures for requests and responses
+- **file_utils.rs**: File operations and resource management
+- **queue_manager.rs**: Job queue and transcription processing
+- **config.rs**: Application configuration 
+- **error.rs**: Error handling and HTTP responses
 
 ## Resources
 

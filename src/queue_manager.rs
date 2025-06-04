@@ -583,6 +583,36 @@ impl QueueManager {
             .ok_or_else(|| QueueError::JobNotFound(job_id.to_string()))
     }
 
+    /// Get the position of a job in the queue (1-based index)
+    /// 
+    /// Returns Some(position) if the job is waiting in the queue, None if it's not in the queue
+    /// Position 1 means it's the next job to be processed after the current one
+    pub async fn get_job_position(&self, job_id: &str) -> Result<Option<usize>, QueueError> {
+        let state = self.state.lock().await;
+        
+        // First check if the job exists
+        if !state.statuses.contains_key(job_id) {
+            return Err(QueueError::JobNotFound(job_id.to_string()));
+        }
+        
+        // If the job is not in Queued status, it's not in the queue
+        if !matches!(state.statuses.get(job_id), Some(JobStatus::Queued)) {
+            return Ok(None);
+        }
+        
+        // Find the position of the job in the queue (1-based index)
+        for (position, job) in state.queue.iter().enumerate() {
+            if job.id == job_id {
+                // Add 1 to make it 1-based instead of 0-based
+                return Ok(Some(position + 1));
+            }
+        }
+        
+        // If we get here, the job is in Queued status but not in the queue
+        // This should not happen, but we handle it just in case
+        Ok(None)
+    }
+
     /// Get the result of a completed job
     pub async fn get_job_result(&self, job_id: &str) -> Result<TranscriptionResult, QueueError> {
         let state = self.state.lock().await;

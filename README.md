@@ -86,9 +86,16 @@ GET /transcription/{job_id}
 ```json
 {
   "status": "Queued|Processing|Completed|Failed",
+  "queue_position": 1,
   "data": "Additional information (result or error)"
 }
 ```
+
+Notes:
+- The `queue_position` field is only included when the status is "Queued".
+- It indicates the job's position in the queue (1-based index), where 1 means it's the next job to be processed after the current one.
+- If a job is already processing or completed, the `queue_position` field will not be included in the response.
+- You can use this value to provide users with an estimated wait time or position in line.
 
 ### Get Transcription Result
 
@@ -134,8 +141,9 @@ DELETE /transcription/{job_id}
 }
 ```
 
-## Test Command
+## Test Commands
 
+### Submit Transcription
 ```bash
 curl -X POST "http://localhost:8181/transcribe" \
   -F "language=fr" \
@@ -146,9 +154,34 @@ curl -X POST "http://localhost:8181/transcribe" \
   -F "file=@/path/to/audio.wav"
 ```
 
+### Check Status (with Queue Position)
+```bash
+curl -X GET "http://localhost:8181/transcription/YOUR_JOB_ID"
+```
+
 Note: The maximum file size accepted is 512 MB.
 
 ### Examples
+
+#### Check Job Status and Queue Position
+```bash
+curl -X GET "http://localhost:8181/transcription/123e4567-e89b-12d3-a456-426614174000"
+```
+
+Example response for a queued job:
+```json
+{
+  "status": "Queued",
+  "queue_position": 3
+}
+```
+
+Example response for a processing job:
+```json
+{
+  "status": "Processing"
+}
+```
 
 #### Disable Speaker Diarization
 ```bash

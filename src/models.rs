@@ -5,6 +5,7 @@
 
 use serde::Serialize;
 use std::path::PathBuf;
+use crate::queue_manager::JobStatus;
 
 /// Response for transcription request
 #[derive(Serialize)]
@@ -52,4 +53,14 @@ pub struct SuccessResponse {
     pub success: bool,
     /// Message describing the successful operation
     pub message: String,
+}
+
+/// Status response for job status requests
+#[derive(Serialize)]
+pub struct StatusResponse {
+    /// Current job status
+    pub status: JobStatus,
+    /// Position in the queue (1-based), if job is queued
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub queue_position: Option<usize>,
 }

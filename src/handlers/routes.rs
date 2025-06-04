@@ -12,8 +12,8 @@ use tokio::sync::Mutex;
 use crate::config::HandlerConfig;
 use crate::error::HandlerError;
 use crate::handlers::form::extract_form_data;
-use crate::models::{SuccessResponse, TranscriptionResponse};
-use crate::queue_manager::{QueueManager, TranscriptionJob};
+use crate::models::{SuccessResponse, TranscriptionResponse, StatusResponse};
+use crate::queue_manager::{JobStatus, QueueManager, TranscriptionJob};
 
 /// Handler for transcription requests
 ///
@@ -77,6 +77,7 @@ pub async fn transcribe(
 /// Handler for transcription status requests
 ///
 /// This endpoint allows clients to check the status of a transcription job.
+/// It also provides the queue position for jobs that are still waiting.
 #[get("/transcription/{job_id}")]
 pub async fn transcription_status(
     job_id: web::Path<String>,
@@ -84,11 +85,30 @@ pub async fn transcription_status(
 ) -> Result<HttpResponse, HandlerError> {
     let job_id = job_id.into_inner();
 
-    // Check job status
-    let queue_manager = queue_manager.lock().await;
-    let status = queue_manager.get_job_status(&job_id).await?;
-
-    Ok(HttpResponse::Ok().json(status))
+    // Create lock scope to minimize lock duration
+    let (status, queue_position) = {
+        let queue_manager = queue_manager.lock().await;
+        
+        // Get job status
+        let status = queue_manager.get_job_status(&job_id).await?;
+        
+        // Get queue position if job is in Queued status
+        let position = if matches!(status, JobStatus::Queued) {
+            queue_manager.get_job_position(&job_id).await?
+        } else {
+            None
+        };
+        
+        (status, position)
+    };
+    
+    // Create response with status and optional queue position
+    let response = StatusResponse {
+        status,
+        queue_position,
+    };
+    
+    Ok(HttpResponse::Ok().json(response))
 }
 
 /// Handler for completed transcription results

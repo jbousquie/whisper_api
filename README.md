@@ -1,6 +1,6 @@
 # WHISPER API
 
-A frontend service for audio transcription using WhisperX.
+A frontend service for audio transcription using WhisperX with authentication.
 
 ## Architecture
 
@@ -24,6 +24,7 @@ The Whisper API follows a queue-based architecture with modular components:
    - Automatically removes old jobs after the retention period (configurable, default: 48 hours)
 
 3. **Client Workflow**:
+   - Client authenticates by including an Authorization header with a Bearer token
    - Client submits audio for transcription and receives a job ID
    - Client periodically checks status URL until transcription is ready
    - When ready, client downloads the transcription result
@@ -50,6 +51,18 @@ The application can be configured using the following environment variables:
 | `RUST_LOG` | Logging level (error, warn, info, debug, trace) | `info` |
 | `HF_TOKEN` | Hugging Face API token for diarization models access (can alternatively be passed per-request or loaded from file) | None |
 | `WHISPER_HF_TOKEN_FILE` | Path to file containing Hugging Face API token | `/home/llm/whisper_api/hf_token.txt` |
+
+## Authentication
+
+All API requests must include an Authorization header with a Bearer token:
+
+```
+Authorization: Bearer your_token_here
+```
+
+Requests without a valid Authorization header will be rejected with a 401 Unauthorized response.
+
+Note: Currently, the API uses a dummy verification that accepts any token, but the header must be present and properly formatted.
 
 ## API Endpoints
 
@@ -146,6 +159,7 @@ DELETE /transcription/{job_id}
 ### Submit Transcription
 ```bash
 curl -X POST "http://localhost:8181/transcribe" \
+  -H "Authorization: Bearer your_token_here" \
   -F "language=fr" \
   -F "diarize=true" \
   -F "prompt=Meeting transcript:" \
@@ -156,7 +170,8 @@ curl -X POST "http://localhost:8181/transcribe" \
 
 ### Check Status (with Queue Position)
 ```bash
-curl -X GET "http://localhost:8181/transcription/YOUR_JOB_ID"
+curl -X GET "http://localhost:8181/transcription/YOUR_JOB_ID" \
+  -H "Authorization: Bearer your_token_here"
 ```
 
 Note: The maximum file size accepted is 512 MB.
@@ -165,7 +180,8 @@ Note: The maximum file size accepted is 512 MB.
 
 #### Check Job Status and Queue Position
 ```bash
-curl -X GET "http://localhost:8181/transcription/123e4567-e89b-12d3-a456-426614174000"
+curl -X GET "http://localhost:8181/transcription/123e4567-e89b-12d3-a456-426614174000" \
+  -H "Authorization: Bearer your_token_here"
 ```
 
 Example response for a queued job:
@@ -186,6 +202,7 @@ Example response for a processing job:
 #### Disable Speaker Diarization
 ```bash
 curl -X POST "http://localhost:8181/transcribe" \
+  -H "Authorization: Bearer your_token_here" \
   -F "diarize=false" \
   -F "file=@/path/to/audio.wav"
 ```
@@ -193,6 +210,7 @@ curl -X POST "http://localhost:8181/transcribe" \
 #### Add Initial Prompt
 ```bash
 curl -X POST "http://localhost:8181/transcribe" \
+  -H "Authorization: Bearer your_token_here" \
   -F "prompt=This is an interview between John and Sarah:" \
   -F "file=@/path/to/audio.wav"
 ```
@@ -200,6 +218,7 @@ curl -X POST "http://localhost:8181/transcribe" \
 #### Use Diarization with Hugging Face Token
 ```bash
 curl -X POST "http://localhost:8181/transcribe" \
+  -H "Authorization: Bearer your_token_here" \
   -F "diarize=true" \
   -F "hf_token=YOUR_HUGGINGFACE_TOKEN" \
   -F "file=@/path/to/audio.wav"
@@ -210,6 +229,7 @@ Note: If you don't provide the `hf_token` parameter, the system will attempt to 
 #### Specify Output Format
 ```bash
 curl -X POST "http://localhost:8181/transcribe" \
+  -H "Authorization: Bearer your_token_here" \
   -F "output_format=srt" \
   -F "file=@/path/to/audio.wav"
 ```

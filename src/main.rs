@@ -1,4 +1,4 @@
-use actix_web::{web, App, HttpServer};
+use actix_web::{web, App, HttpServer, middleware::Logger};
 use env_logger::Env;
 use log::{info, warn};
 
@@ -12,7 +12,7 @@ mod queue_manager;
 
 // Import the types we need
 use config::HandlerConfig;
-use handlers::{transcribe, transcription_result, transcription_status, cancel_transcription};
+use handlers::{transcribe, transcription_result, transcription_status, cancel_transcription, Authentication};
 use queue_manager::{QueueManager, WhisperConfig};
 
 const DEFAULT_WHISPER_API_HOST: &str = "127.0.0.1";
@@ -65,6 +65,8 @@ async fn main() -> std::io::Result<()> {
 
     HttpServer::new(move || {
         App::new()
+            .wrap(Logger::default())
+            .wrap(Authentication)
             .app_data(web::Data::new(queue_manager.clone()))
             .app_data(web::Data::new(handler_config.clone()))
             .service(transcribe)

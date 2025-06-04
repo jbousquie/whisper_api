@@ -20,7 +20,7 @@ The Whisper API follows a queue-based architecture with modular components:
    - Invokes the WhisperX command to transcribe audio files
    - Stores results in a temporary directory
    - Tracks job status (queued, processing, completed, failed)
-   - Handles cleanup of temporary files
+   - Handles cleanup of all job files (both temporary and output files)
    - Automatically removes old jobs after the retention period (configurable, default: 48 hours)
 
 3. **Client Workflow**:
@@ -28,7 +28,7 @@ The Whisper API follows a queue-based architecture with modular components:
    - Client submits audio for transcription and receives a job ID
    - Client periodically checks status URL until transcription is ready
    - When ready, client downloads the transcription result
-   - After successful download, temporary files are cleaned up
+   - After successful download, all files (both temporary and output files) are cleaned up
    - Alternatively, client can cancel a pending job if transcription is no longer needed
 
 ## Environment Variables
@@ -130,6 +130,8 @@ GET /transcription/{job_id}/result
   ]
 }
 ```
+
+**Security Note**: When this endpoint is called, the system automatically removes all transcription files (both from the temporary directory and the WhisperX output directory) to ensure privacy and prevent data leakage.
 
 ### Cancel a Transcription Job
 
@@ -241,9 +243,24 @@ The API is organized into modular components:
 - **handlers/**: HTTP request handlers and form processing
 - **models.rs**: Data structures for requests and responses
 - **file_utils.rs**: File operations and resource management
-- **queue_manager.rs**: Job queue and transcription processing
+- **queue_manager.rs**: Job queue and transcription processing with secure file cleanup
 - **config.rs**: Application configuration 
 - **error.rs**: Error handling and HTTP responses
+
+## Security and Privacy
+
+The Whisper API implements several security and privacy measures:
+
+1. **Authentication**: All API endpoints require Bearer token authentication
+2. **Comprehensive File Cleanup**:
+   - Temporary files in the job directory are removed after delivering results
+   - Output files in the WhisperX output directory are also removed
+   - Files are deleted immediately after successful result delivery
+   - Automatic cleanup of expired jobs runs periodically
+3. **File Isolation**:
+   - Each job gets a unique UUID-based directory
+   - Audio files and transcription results are isolated
+   - File paths are not exposed to clients
 
 ## Resources
 

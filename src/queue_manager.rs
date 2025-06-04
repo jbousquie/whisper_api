@@ -135,6 +135,8 @@ struct JobMetadata {
     folder_path: PathBuf,
     /// Timestamp when the job was created
     created_at: SystemTime,
+    /// Path to the output file in the WhisperX output directory
+    output_file_path: Option<PathBuf>,
 }
 
 /// Transcription result structure
@@ -274,24 +276,26 @@ impl QueueManager {
                 }
 
                 // Process the job
-                let result = Self::process_transcription(job.clone(), &config).await;
+                let result = Self::process_transcription(job.clone(), &config, state.clone()).await;
 
                 // Update job status based on result
                 {
                     let mut state_guard = state.lock().await;
-                    match result {
+                    match &result {
                         Ok(result) => {
                             info!("Job {} completed successfully", job_id);
                             state_guard
                                 .statuses
                                 .insert(job_id.clone(), JobStatus::Completed);
-                            state_guard.results.insert(job_id.clone(), result);
+                            state_guard.results.insert(job_id.clone(), result.clone());
+                            
+                            // The output file path is already set in process_transcription
                         }
                         Err(e) => {
                             error!("Job {} failed: {}", job_id, e);
                             state_guard
                                 .statuses
-                                .insert(job_id, JobStatus::Failed(e.to_string()));
+                                .insert(job_id.clone(), JobStatus::Failed(e.to_string()));
                         }
                     }
 
@@ -361,6 +365,7 @@ impl QueueManager {
     async fn process_transcription(
         job: TranscriptionJob,
         config: &WhisperConfig,
+        state: Arc<Mutex<QueueState>>,
     ) -> Result<TranscriptionResult, QueueError> {
         debug!("Processing job {}", job.id);
 
@@ -416,6 +421,10 @@ impl QueueManager {
         let output_filename = format!("{}.{}", audio_file_name, output_format);
         let output_file_path = Path::new(&config.output_dir).join(&output_filename);
 
+        // Store the output file path in the job metadata for later cleanup
+        // This will be retrieved and used during cleanup to remove the output file
+        let output_file_path_clone = output_file_path.clone();
+
         let output = command
             .output()
             .map_err(|e| QueueError::TranscriptionError(format!("Failed to run command: {}", e)))?;
@@ -437,6 +446,14 @@ impl QueueManager {
             .folder_path
             .join(format!("transcript.{}", output_format));
         fs::write(&job_result_path, &file_content).map_err(|e| QueueError::IoError(e))?;
+        
+        // Update job metadata with output file path for later cleanup
+        {
+            let mut state_guard = state.lock().await;
+            if let Some(metadata) = state_guard.job_metadata.get_mut(&job.id) {
+                metadata.output_file_path = Some(output_file_path_clone);
+            }
+        }
 
         // Create result with the file content as-is
         let result = TranscriptionResult {
@@ -553,6 +570,7 @@ impl QueueManager {
                 JobMetadata {
                     folder_path: job.folder_path.clone(),
                     created_at: SystemTime::now(),
+                    output_file_path: None, // Will be set during processing
                 },
             );
 
@@ -695,21 +713,31 @@ impl QueueManager {
                 ));
             }
 
-            // Get folder path from job metadata
-            let folder_path = state
-                .job_metadata
-                .get(job_id)
-                .map(|metadata| &metadata.folder_path);
+            // Get metadata from job
+            let metadata = state.job_metadata.get(job_id);
 
-            // Try to remove files if we found a folder path
-            if let Some(path) = folder_path {
-                if let Err(e) = fs::remove_dir_all(path) {
-                    error!("Failed to remove job folder {}: {}", path.display(), e);
+            // Try to remove temp folder if we found a folder path
+            if let Some(metadata) = metadata {
+                // Clean up temporary folder
+                if let Err(e) = fs::remove_dir_all(&metadata.folder_path) {
+                    error!("Failed to remove job folder {}: {}", metadata.folder_path.display(), e);
                     // Don't return error here, we still want to clean up the job state
+                }
+
+                // Clean up output file if it exists
+                if let Some(output_path) = &metadata.output_file_path {
+                    if output_path.exists() {
+                        if let Err(e) = fs::remove_file(output_path) {
+                            error!("Failed to remove output file {}: {}", output_path.display(), e);
+                            // Continue with cleanup even if file removal fails
+                        } else {
+                            debug!("Successfully removed output file: {}", output_path.display());
+                        }
+                    }
                 }
             } else {
                 warn!(
-                    "No folder path found for job {}, skipping file cleanup",
+                    "No metadata found for job {}, skipping file cleanup",
                     job_id
                 );
             }

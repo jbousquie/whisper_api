@@ -33,6 +33,7 @@ The codebase follows a modular design pattern with clear separation of concerns:
 - Features a configurable automatic job expiration system (default: 48 hours retention)
 - Provides a clean API for job management (status checks, result retrieval, cancellation)
 - Validates and processes various output formats (srt, vtt, txt, tsv, json, aud)
+- Ensures complete cleanup of both temporary files and WhisperX output files for privacy and security
 
 ### 3. HTTP Request Handling
 - RESTful API endpoints implemented with Actix-web for high performance
@@ -108,7 +109,7 @@ The codebase follows a modular design pattern with clear separation of concerns:
    - Client authenticates with Bearer token in the Authorization header
    - Client requests final transcription when status is Completed
    - Server returns structured JSON with transcription text and metadata
-   - Temporary files automatically cleaned up after successful delivery
+   - Both temporary files and WhisperX output files automatically cleaned up after successful delivery
    - Error handling for cases where job is not complete or has failed
 
 5. **Cancellation** (`DELETE /transcription/{job_id}`):
@@ -142,10 +143,11 @@ The codebase follows a modular design pattern with clear separation of concerns:
    ```
 
 - **Multi-layered Cleanup Mechanisms**:
-   - Immediate cleanup after result delivery
+   - Immediate cleanup after result delivery (both temporary and output files)
    - Error path cleanup to prevent orphaned files
    - Cancellation cleanup for aborted jobs
    - Background periodic cleanup for expired jobs (48-hour retention)
+   - Tracking of WhisperX output files for complete removal
 
 - **Resource Protection**:
    - File size validation (max 512MB)
@@ -318,7 +320,7 @@ The codebase follows a modular design pattern with clear separation of concerns:
   - Complete API with all endpoints functional
   - Authentication middleware requiring Bearer tokens for all requests
   - Queue management with sequential processing and position tracking
-  - File isolation and cleanup processes
+  - Comprehensive file isolation and cleanup processes (both temporary and output files)
   - Error handling and logging
   - Configuration via environment variables
   - HuggingFace token handling with fallback mechanisms

@@ -37,7 +37,7 @@ The application can be configured using the following environment variables:
 
 | Variable | Description | Default Value |
 |----------|-------------|---------------|
-| `WHISPER_CMD` | Path to the WhisperX command | `whisperx` |
+| `WHISPER_CMD` | Path to the WhisperX script | `/home/llm/whisper_api/whisperx.sh` |
 | `WHISPER_MODELS_DIR` | Path to the models directory | `/models` |
 | `WHISPER_OUTPUT_DIR` | Directory for WhisperX to store output files | `/home/llm/whisper_api/output` |
 | `WHISPER_OUTPUT_FORMAT` | Default output format for transcriptions | `txt` |
@@ -246,6 +246,9 @@ The API is organized into modular components:
 - **queue_manager.rs**: Job queue and transcription processing with secure file cleanup
 - **config.rs**: Application configuration 
 - **error.rs**: Error handling and HTTP responses
+- **whisperx.sh**: Wrapper script for running WhisperX in its virtual environment
+
+The `whisperx.sh` script is responsible for activating the Python virtual environment, running the WhisperX command with the provided arguments, and then deactivating the environment. This ensures proper execution of WhisperX without requiring the API to manage Python environments directly.
 
 ## Security and Privacy
 

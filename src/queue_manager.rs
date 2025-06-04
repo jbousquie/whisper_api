@@ -16,7 +16,7 @@ use std::time::{Duration, SystemTime};
 use thiserror::Error;
 use tokio::sync::{mpsc, Mutex};
 
-const DEFAULT_WHISPER_CMD: &str = "/home/llm/whisperx/venv/bin/whisperx";
+const DEFAULT_WHISPER_CMD: &str = "/home/llm/whisper_api/whisperx.sh";
 const DEFAULT_WHISPER_MODELS_DIR: &str = "/home/llm/models/whisperx_models";
 const DEFAULT_WHISPER_OUTPUT_DIR: &str = "/home/llm/whisper_api/output";
 const DEFAULT_WHISPER_OUTPUT_FORMAT: &str = "txt";

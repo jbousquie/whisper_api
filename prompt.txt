@@ -46,7 +46,8 @@ The codebase follows a modular design pattern with clear separation of concerns:
 - Automatic disabling of diarization when no token is available
 
 ### 4. WhisperX Integration
-- Executes WhisperX as an external command-line process with proper error handling
+- Executes WhisperX through a wrapper script that manages the Python virtual environment
+- Uses a dedicated bash script (`whisperx.sh`) to handle environment activation/deactivation
 - Configurable parameters including:
   - Model selection (tiny to large-v3, default: large-v3)
   - Language specification (default: fr)
@@ -197,6 +198,29 @@ The codebase follows a modular design pattern with clear separation of concerns:
    ```
 
 ### Configuration System
+- **WhisperX Script Wrapper**:
+   ```bash
+   #!/bin/bash
+   
+   # Chemin absolu vers le répertoire de whisperx
+   PROJECT_DIR="/home/llm/whisperx"
+   
+   # Chemin absolu vers l'environnement virtuel : venv
+   VENV_DIR="$PROJECT_DIR/venv"
+   
+   # Chemin absolu vers la commande whisperx
+   PYTHON_SCRIPT="$VENV_DIR/bin/whisperx"
+   
+   # --- Activaction de l'environnement virtuel ---
+   source "$VENV_DIR/bin/activate"
+   
+   # --- Exécution du programme Python avec tous les arguments passés au script ---
+   python "$PYTHON_SCRIPT" "$@"
+   
+   # --- Désactivation l'environnement virtuel ---
+   deactivate
+   ```
+
 - **Environment Variables with Defaults**:
    ```rust
    // Environment variable loading with defaults
@@ -206,6 +230,8 @@ The codebase follows a modular design pattern with clear separation of concerns:
                .unwrap_or_else(|_| String::from(defaults::TEMP_DIR)),
            hf_token_file: env::var("WHISPER_HF_TOKEN_FILE")
                .unwrap_or_else(|_| String::from(defaults::HF_TOKEN_FILE)),
+           command_path: env::var("WHISPER_CMD")
+               .unwrap_or_else(|_| String::from(DEFAULT_WHISPER_CMD)), // Uses whisperx.sh script by default
        }
    }
    ```
@@ -302,7 +328,8 @@ The codebase follows a modular design pattern with clear separation of concerns:
 ## Deployment Requirements
 - **Runtime Dependencies**:
   - Rust with Tokio async runtime
-  - WhisperX executable and models accessible via path
+  - WhisperX installed in its virtual environment
+  - Bash script (`whisperx.sh`) to handle Python environment management
   - GPU support for efficient transcription processing
   - Sufficient disk space for temporary files and results
   - HuggingFace token file (`/home/llm/whisper_api/hf_token.txt` by default) if diarization support needed

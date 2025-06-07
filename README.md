@@ -31,7 +31,34 @@ The Whisper API follows a queue-based architecture with modular components:
    - After successful download, all files (both temporary and output files) are cleaned up
    - Alternatively, client can cancel a pending job if transcription is no longer needed
 
-## Environment Variables
+## Configuration
+
+### Configuration File
+
+The application uses a configuration system with the following priority (highest to lowest):
+
+1. Environment variables
+2. Configuration file (`whisper_api.conf`)
+3. Default constants
+
+The configuration file uses TOML format and should be placed in the same directory as the application. Here's an example of the configuration file:
+
+```
+# Whisper API Configuration File
+WHISPER_API_HOST = "192.168.0.116"
+WHISPER_API_PORT = "8181"
+WHISPER_CMD = "/home/llm/whisper_api/whisperx.sh"
+# Additional configuration options...
+```
+
+At startup, the application will:
+1. Try to load the configuration from `whisper_api.conf`
+2. Set environment variables from the config file if they don't already exist
+3. Use environment variables or fall back to default values
+
+This allows for flexible configuration management across different environments.
+
+### Environment Variables
 
 The application can be configured using the following environment variables:
 
@@ -156,6 +183,32 @@ DELETE /transcription/{job_id}
 }
 ```
 
+## Configuration Example
+
+A complete `whisper_api.conf` file might look like this:
+
+```
+# Server Configuration 
+WHISPER_API_HOST = "0.0.0.0"
+WHISPER_API_PORT = "9000"
+WHISPER_API_TIMEOUT = 600
+WHISPER_API_KEEPALIVE = 600
+
+# File Storage Configuration
+WHISPER_TMP_FILES = "/data/whisper/tmp"
+WHISPER_HF_TOKEN_FILE = "/data/secrets/hf_token.txt"
+
+# WhisperX Configuration
+WHISPER_CMD = "/opt/whisper/whisperx.sh"
+WHISPER_MODELS_DIR = "/opt/whisper/models"
+WHISPER_OUTPUT_DIR = "/data/whisper/output"
+WHISPER_OUTPUT_FORMAT = "srt"
+
+# Job Management Configuration
+WHISPER_JOB_RETENTION_HOURS = 24
+WHISPER_CLEANUP_INTERVAL_HOURS = 6
+```
+
 ## Test Commands
 
 ### Submit Transcription
@@ -244,11 +297,14 @@ The API is organized into modular components:
 - **models.rs**: Data structures for requests and responses
 - **file_utils.rs**: File operations and resource management
 - **queue_manager.rs**: Job queue and transcription processing with secure file cleanup
-- **config.rs**: Application configuration 
+- **config.rs**: Application configuration management
+- **config_loader.rs**: Configuration loading from TOML file and environment variables
 - **error.rs**: Error handling and HTTP responses
 - **whisperx.sh**: Wrapper script for running WhisperX in its virtual environment
 
 The `whisperx.sh` script is responsible for activating the Python virtual environment, running the WhisperX command with the provided arguments, and then deactivating the environment. This ensures proper execution of WhisperX without requiring the API to manage Python environments directly.
+
+The path to this script can be configured via the `WHISPER_CMD` setting in the configuration file or environment variable.
 
 ## Security and Privacy
 

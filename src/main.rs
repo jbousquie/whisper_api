@@ -1,9 +1,10 @@
-use actix_web::{web, App, HttpServer, middleware::Logger};
+use actix_web::{middleware::Logger, web, App, HttpServer};
 use env_logger::Env;
 use log::{info, warn};
 
 // Import our modules
 mod config;
+mod config_loader;
 mod error;
 mod file_utils;
 mod handlers;
@@ -12,7 +13,9 @@ mod queue_manager;
 
 // Import the types we need
 use config::HandlerConfig;
-use handlers::{transcribe, transcription_result, transcription_status, cancel_transcription, Authentication};
+use handlers::{
+    cancel_transcription, transcribe, transcription_result, transcription_status, Authentication,
+};
 use queue_manager::{QueueManager, WhisperConfig};
 
 const DEFAULT_WHISPER_API_HOST: &str = "127.0.0.1";
@@ -24,6 +27,13 @@ const DEFAULT_WHISPER_API_KEEPALIVE: u64 = 480;
 async fn main() -> std::io::Result<()> {
     // Initialize logger
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
+
+    // Load configuration from file and environment variables
+    if config_loader::load_config() {
+        info!("Configuration loaded from file");
+    } else {
+        info!("Using environment variables and defaults (no config file loaded)");
+    }
 
     // Load configurations
     let handler_config = HandlerConfig::default();

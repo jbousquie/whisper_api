@@ -27,7 +27,10 @@ The codebase follows a modular design pattern with clear separation of concerns:
 ### 2. Queue Manager (`queue_manager.rs`)
 - Implements a FIFO transcription job queue using thread-safe `Arc<Mutex<>>` wrappers
 - Utilizes Tokio's asynchronous runtime for non-blocking, efficient IO operations
-- Enforces sequential job processing (one at a time) to prevent GPU resource contention
+- Supports two processing modes:
+  - Sequential mode (default): Processes one job at a time to prevent GPU resource contention
+  - Concurrent mode: Processes multiple jobs simultaneously when enabled via configuration
+- Configurable concurrency level with `MAX_CONCURRENT_JOBS` setting (default: 6)
 - Maintains job state (Queued, Processing, Completed, Failed) with automatic transitions
 - Handles the complete job lifecycle from submission through processing to cleanup
 - Features a configurable automatic job expiration system (default: 48 hours retention)
@@ -69,17 +72,63 @@ The codebase follows a modular design pattern with clear separation of concerns:
 2. **Queue Management**:
    - Uses `Arc<Mutex<QueueState>>` to provide thread-safe access to shared state
    - Implements a single-producer, multiple-consumer (mpsc) channel for job dispatching
-   - The `processing` flag ensures only one job runs at a time
-   - Provides queue position information for jobs waiting in the queue
+   - Configurable processing model (sequential or concurrent):
+     - Sequential mode: Uses a processing counter to ensure only one job runs at a time
+     - Concurrent mode: Uses a processing counter and job set to track multiple running jobs
+   - Smart queue position calculation for both sequential and concurrent modes
+   - Provides accurate queue position information (including "batch" positioning in concurrent mode)
    - Lock acquisition patterns carefully designed to prevent deadlocks:
      ```rust
      let queue_manager = queue_manager.lock().await;
      queue_manager.add_job(job).await?;
      ```
+   - Dual-mode job processing architecture:
+     ```rust
+     // State structure supports both modes through these fields:
+     struct QueueState {
+         queue: VecDeque<TranscriptionJob>,
+         processing_count: usize,        // Counter for active jobs
+         processing_jobs: HashSet<String>,  // Set of job IDs being processed
+         // ...other fields
+     }
+     
+     // Queue manager determines mode from configuration:
+     pub struct QueueManager {
+         state: Arc<Mutex<QueueState>>,
+         job_tx: mpsc::Sender<TranscriptionJob>,
+         enable_concurrency: bool,       // Processing mode flag
+         max_concurrent_jobs: usize,     // Maximum concurrent jobs
+     }
+     ```
 
 3. **Background Processing**:
    - Dedicated async task runs independently of the HTTP request lifecycle
-   - Listens on the job channel and processes jobs sequentially
+   - Listens on the job channel and processes jobs sequentially or concurrently based on configuration
+   - Dynamic job allocation system that adapts to the chosen processing model:
+     ```rust
+     // Determine job capacity based on processing mode
+     let available_slots = if enable_concurrency {
+         // In concurrent mode, use available capacity up to max_concurrent_jobs
+         max_concurrent_jobs.saturating_sub(state_guard.processing_count)
+     } else {
+         // In sequential mode, only process one job at a time
+         if state_guard.processing_count == 0 { 1 } else { 0 }
+     };
+     
+     // Start as many jobs as we have slots for (may be 0, 1, or multiple)
+     for _ in 0..available_slots {
+         if let Some(next_job) = state_guard.queue.pop_front() {
+             // Update processing tracking
+             state_guard.processing_count += 1;
+             state_guard.processing_jobs.insert(next_job.id.clone());
+             
+             // Start the job in its own task
+             tokio::spawn(async move {
+                 // Process the job asynchronously
+             });
+         }
+     }
+     ```
    - Automatically chains job processing to maintain FIFO order
    - Manages state transitions and error handling
 
@@ -90,7 +139,28 @@ The codebase follows a modular design pattern with clear separation of concerns:
    - Server validates input and parameters
    - Unique directory created for job isolation
    - If HuggingFace token not provided in request, attempts to read from file
-   - Job added to queue and client receives job ID and status URL
+   - Job handling based on processing mode and current capacity:
+     ```rust
+     // Determine whether to queue or process immediately
+     let can_process_now = if self.enable_concurrency {
+         state.processing_count < self.max_concurrent_jobs
+     } else {
+         state.processing_count == 0
+     };
+     
+     if can_process_now {
+         // Start processing immediately
+         state.processing_count += 1;
+         state.processing_jobs.insert(job_id.clone());
+         state.statuses.insert(job_id.clone(), JobStatus::Processing);
+         // Send job directly to processor
+     } else {
+         // Add job to queue (FIFO order)
+         state.queue.push_back(job);
+         state.statuses.insert(job_id.clone(), JobStatus::Queued);
+     }
+     ```
+   - Client receives job ID and status URL regardless of immediate processing or queuing
 
 2. **Processing**:
    - Background processor dequeues jobs one at a time
@@ -103,7 +173,19 @@ The codebase follows a modular design pattern with clear separation of concerns:
    - Client authenticates with Bearer token in the Authorization header
    - Client polls status endpoint using job ID
    - Server responds with current status (Queued, Processing, Completed, Failed)
-   - For queued jobs, includes position in queue (1-based index)
+   - For queued jobs, includes position in queue with mode-specific calculation:
+     ```rust
+     // With concurrency enabled, adjust the queue position
+     // to show which "batch" the job will be in
+     if self.enable_concurrency && self.max_concurrent_jobs > 1 {
+         // Example: If max_concurrent_jobs=3, positions 1-3 → batch 1, 
+         // positions 4-6 → batch 2, etc.
+         let adjusted_position = (position + self.max_concurrent_jobs - 1) 
+                                / self.max_concurrent_jobs;
+         return Ok(Some(adjusted_position));
+     }
+     ```
+   - This gives clients meaningful information about wait times regardless of processing mode
    - No file system operations during status checks for efficiency
 
 4. **Result Retrieval** (`GET /transcription/{job_id}/result`):
@@ -151,8 +233,32 @@ The codebase follows a modular design pattern with clear separation of concerns:
    - Tracking of WhisperX output files for complete removal
 
 - **Resource Protection**:
-   - File size validation (max 512MB)
-   - Sequential processing to prevent GPU exhaustion
+   - File size validation (configurable, default: 512MB)
+   - Processing mode configurable between sequential (safer) and concurrent (faster) modes
+   - Managed concurrency to optimize GPU resource utilization:
+     ```rust
+     // Single unified implementation elegantly handles both modes
+     async fn check_and_start_next_jobs(
+         state_guard: &mut QueueState,
+         job_tx: &mpsc::Sender<TranscriptionJob>,
+         enable_concurrency: bool,
+         max_concurrent_jobs: usize,
+     ) {
+         // Calculate available capacity based on processing mode
+         let available_slots = if enable_concurrency {
+             max_concurrent_jobs.saturating_sub(state_guard.processing_count)
+         } else {
+             if state_guard.processing_count == 0 { 1 } else { 0 }
+         };
+         
+         // Start only the number of jobs allowed by the current mode
+         for _ in 0..available_slots {
+             if let Some(next_job) = state_guard.queue.pop_front() {
+                 // Process job...
+             }
+         }
+     }
+     ```
    - Proper error handling to ensure resource release
    - Configurable timeouts to prevent hung connections
 
@@ -198,6 +304,32 @@ The codebase follows a modular design pattern with clear separation of concerns:
    ```
 
 ### Configuration System
+
+- **TOML Configuration File**:
+  - Located at `whisper_api.conf` in the application directory
+  - Supports all configuration parameters in TOML format with sections for clarity
+  - Values loaded at startup before environment variables are checked
+  - Configuration values loaded with hierarchical precedence:
+    1. Environment variables (highest priority)
+    2. Configuration file values
+    3. Default constants (lowest priority)
+  - Example structure:
+  ```toml
+  # Server Configuration 
+  WHISPER_API_HOST = "127.0.0.1"
+  WHISPER_API_PORT = "8181"
+  
+  # File Storage Configuration
+  WHISPER_TMP_FILES = "/home/llm/whisper_api/tmp"
+  
+  # Concurrency Configuration
+  ENABLE_CONCURRENCY = false
+  MAX_CONCURRENT_JOBS = 6
+  
+  # Upload Configuration
+  MAX_FILE_SIZE = 536870912  # 512MB
+  ```
+
 - **WhisperX Script Wrapper**:
    ```bash
    #!/bin/bash
@@ -236,6 +368,40 @@ The codebase follows a modular design pattern with clear separation of concerns:
    }
    ```
 
+- **Configuration Loading**:
+   ```rust
+   // Load configuration from TOML file and set environment variables
+   pub fn load_config() -> bool {
+       let config_path = Path::new(CONFIG_FILE_PATH);
+       
+       // Check if configuration file exists
+       if !config_path.exists() {
+           debug!("Configuration file not found at: {}", CONFIG_FILE_PATH);
+           return false;
+       }
+       
+       // Read and parse TOML content
+       let config_content = match fs::read_to_string(config_path) {
+           Ok(content) => content,
+           Err(e) => {
+               warn!("Failed to read configuration file: {}", e);
+               return false;
+           }
+       };
+       
+       // Convert TOML into environment variables, if they don't already exist
+       // This ensures that explicit environment variables take precedence
+       // over configuration file values
+       for (key, value) in parsed_config {
+           if env::var(&key).is_err() {
+               env::set_var(key, value);
+           }
+       }
+       
+       true
+   }
+   ```
+
 - **Centralized Configuration Constants**:
    ```rust
    pub mod defaults {
@@ -244,6 +410,9 @@ The codebase follows a modular design pattern with clear separation of concerns:
        pub const MODEL: &str = "large-v3";
        pub const HF_TOKEN_FILE: &str = "/home/llm/whisper_api/hf_token.txt";
        pub const VALID_OUTPUT_FORMATS: [&str; 6] = ["srt", "vtt", "txt", "tsv", "json", "aud"];
+       pub const MAX_FILE_SIZE: usize = 536870912; // 512MB
+       pub const ENABLE_CONCURRENCY: bool = false; 
+       pub const MAX_CONCURRENT_JOBS: usize = 6;
    }
    ```
 
@@ -290,7 +459,7 @@ The codebase follows a modular design pattern with clear separation of concerns:
 - **Purpose**: Upload audio file and start transcription
 - **Headers**: `Authorization: Bearer <token>` (required)
 - **Form Parameters**:
-  - `file`: Audio file (required, max 512MB)
+  - `file`: Audio file (required, configurable max size, default: 512MB)
   - `language`: Language code (optional, default: "fr")
   - `model`: Model name (optional, default: "large-v3")
   - `diarize`: Enable speaker diarization (optional, default: true)
@@ -327,20 +496,62 @@ The codebase follows a modular design pattern with clear separation of concerns:
 
 ## Deployment Requirements
 - **Runtime Dependencies**:
-  - Rust with Tokio async runtime
-  - WhisperX installed in its virtual environment
-  - Bash script (`whisperx.sh`) to handle Python environment management
-  - GPU support for efficient transcription processing
-  - Sufficient disk space for temporary files and results
-  - HuggingFace token file (`/home/llm/whisper_api/hf_token.txt` by default) if diarization support needed
-    - File should contain only the API token as plain text
-    - Optional - system will operate without it but diarization will be disabled
+  - **Deployment Requirements**:
+    - Rust with Tokio async runtime
+    - WhisperX installed in its virtual environment
+    - Bash script (`whisperx.sh`) to handle Python environment management
+    - GPU support for efficient transcription processing
+    - Sufficient disk space for temporary files and results
+    - HuggingFace token file (`/home/llm/whisper_api/hf_token.txt` by default) if diarization support needed
+      - File should contain only the API token as plain text
+      - Optional - system will operate without it but diarization will be disabled
 
-- **Environment Configuration**:
-  - 15+ configurable environment variables for customization
-  - Defaults suitable for standard deployments
-  - `WHISPER_HF_TOKEN_FILE` variable to specify custom location for HuggingFace token file
-  - Documentation in README.md for all settings
+  - **Configuration Options**:
+    - TOML configuration file (`whisper_api.conf`) for persistent configuration
+    - Environment variables for runtime overrides
+    - 17+ configurable parameters including concurrency settings
+    - Defaults suitable for standard deployments
+  
+  - **Concurrency Configuration**:
+    - `ENABLE_CONCURRENCY`: Boolean flag to enable/disable concurrent processing (default: false)
+    - `MAX_CONCURRENT_JOBS`: Maximum number of concurrent jobs when enabled (default: 6)
+    - Sequential mode recommended for systems with limited GPU memory
+    - Concurrent mode recommended for systems with multiple GPUs or high-memory GPUs
+    - Unified architectural approach that handles both modes without code duplication:
+      ```rust
+      // Job Processing Implementation:
+    
+      // 1. Job submission logic checks if immediate processing is possible:
+      let can_process_now = if self.enable_concurrency {
+          state.processing_count < self.max_concurrent_jobs
+      } else {
+          state.processing_count == 0
+      };
+    
+      // 2. Job processor manages concurrency dynamically:
+      tokio::spawn(async move {
+          // Each job is processed in its own task
+          let result = Self::process_transcription(job, &config, state.clone()).await;
+        
+          // After job completes, update state and start next jobs if possible
+          {
+              let mut state_guard = state.lock().await;
+              // Update job status
+              state_guard.processing_count -= 1;
+              state_guard.processing_jobs.remove(&job_id);
+            
+              // Check if more jobs can now be started
+              Self::check_and_start_next_jobs(
+                  &mut state_guard, &job_tx, enable_concurrency, max_concurrent_jobs
+              ).await;
+          }
+      });
+    
+      // 3. Each completed job may trigger additional jobs to start, maintaining
+      //    either sequential or concurrent operation as configured
+      ```
+    - `WHISPER_HF_TOKEN_FILE` variable to specify custom location for HuggingFace token file
+    - Documentation in README.md for all settings
 
 ## Current Status and Limitations
 - **Fully Implemented Features**:

@@ -9,11 +9,11 @@ use log::{error, info, warn};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::Mutex;
-
+use crate::Metrics;
 use crate::config::HandlerConfig;
 use crate::error::HandlerError;
 use crate::handlers::form::extract_form_data;
-use crate::metrics::Metrics;
+
 use crate::models::{StatusResponse, SuccessResponse, TranscriptionResponse};
 use crate::queue_manager::{JobStatus, QueueManager, TranscriptionJob};
 

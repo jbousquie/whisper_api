@@ -11,12 +11,13 @@ mod metrics;
 mod models;
 mod queue_manager;
 
-// Import the types we need
+use crate::metrics::metrics::{create_metrics_exporter,Metrics};
 use config::{HandlerConfig, MetricsConfig};
+
+// Import the types we need
 use handlers::{
     cancel_transcription, transcribe, transcription_result, transcription_status, Authentication,
 };
-use metrics::{create_metrics_exporter, Metrics};
 use queue_manager::{QueueManager, WhisperConfig};
 
 const DEFAULT_WHISPER_API_HOST: &str = "127.0.0.1";

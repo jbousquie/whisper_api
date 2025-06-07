@@ -4,7 +4,7 @@
 //! requests asynchronously. It processes one job at a time to ensure WhisperX can use all available
 //! physical resources for each transcription job.
 
-use crate::metrics::Metrics;
+use crate::metrics::metrics::Metrics;
 use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

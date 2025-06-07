@@ -11,5 +11,6 @@ pub mod routes;
 pub use self::routes::{
     cancel_transcription, transcribe, transcription_result, transcription_status,
 };
+
 // Re-export authentication middleware
 pub use self::authentication::Authentication;

@@ -165,6 +165,8 @@ impl Metrics {
 pub fn create_metrics_exporter(
     exporter_type: &str,
     endpoint: Option<&str>,
+    prefix: Option<&str>,
+    sample_rate: Option<f64>,
 ) -> Arc<dyn MetricsExporter> {
     match exporter_type.to_lowercase().as_str() {
         "prometheus" => {
@@ -174,10 +176,20 @@ pub fn create_metrics_exporter(
         "statsd" => {
             let endpoint = endpoint.unwrap_or("localhost:8125");
             debug!(
-                "Initializing StatsD metrics exporter with endpoint: {}",
-                endpoint
+                "Initializing StatsD metrics exporter with endpoint: {}, prefix: {:?}, sample_rate: {:?}",
+                endpoint, prefix, sample_rate
             );
-            Arc::new(StatsDExporter::new(endpoint.to_string()))
+            match StatsDExporter::new(
+                endpoint.to_string(),
+                prefix.map(|s| s.to_string()),
+                sample_rate,
+            ) {
+                Ok(exporter) => Arc::new(exporter),
+                Err(e) => {
+                    warn!("Failed to create StatsD exporter: {}, using null exporter", e);
+                    Arc::new(NullExporter)
+                }
+            }
         }
         "none" | "disabled" => {
             debug!("Metrics disabled, using null exporter");

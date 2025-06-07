@@ -24,7 +24,6 @@ const DEFAULT_WHISPER_API_HOST: &str = "127.0.0.1";
 const DEFAULT_WHISPER_API_PORT: &str = "8181";
 const DEFAULT_WHISPER_API_TIMEOUT_SECONDS: u64 = 480; // 8 minutes
 const DEFAULT_WHISPER_API_KEEPALIVE_SECONDS: u64 = 480; // 8 minutes
-const DEFAULT_METRICS_EXPORTER: &str = "none";
 
 /// Metrics endpoint handler
 async fn metrics_handler(metrics: web::Data<Metrics>) -> Result<HttpResponse, actix_web::Error> {
@@ -45,19 +44,15 @@ async fn main() -> std::io::Result<()> {
 
     // Load configurations
     let handler_config = HandlerConfig::default();
-    let whisper_config = WhisperConfig::default();
-
-    // Create metrics config with custom default
-    let metrics_config = MetricsConfig {
-        exporter_type: std::env::var("METRICS_EXPORTER")
-            .unwrap_or_else(|_| DEFAULT_METRICS_EXPORTER.to_string()),
-        endpoint: std::env::var("METRICS_ENDPOINT").ok(),
-    };
+    let whisper_config = WhisperConfig::default();    // Create metrics config with custom default
+    let metrics_config = MetricsConfig::default();
 
     // Initialize metrics
     let metrics_exporter = create_metrics_exporter(
         &metrics_config.exporter_type,
         metrics_config.endpoint.as_deref(),
+        metrics_config.prefix.as_deref(),
+        metrics_config.sample_rate,
     );
     let metrics = Metrics::new(metrics_exporter);
 

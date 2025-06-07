@@ -81,6 +81,10 @@ pub struct MetricsConfig {
     pub exporter_type: String,
     /// Endpoint for metrics exporter (if applicable)
     pub endpoint: Option<String>,
+    /// Metrics prefix for all metrics (useful for StatsD)
+    pub prefix: Option<String>,
+    /// Sample rate for metrics (0.0 to 1.0, mainly for StatsD)
+    pub sample_rate: Option<f64>,
 }
 
 impl Default for MetricsConfig {
@@ -88,6 +92,10 @@ impl Default for MetricsConfig {
         Self {
             exporter_type: env::var("METRICS_EXPORTER").unwrap_or_else(|_| "none".to_string()),
             endpoint: env::var("METRICS_ENDPOINT").ok(),
+            prefix: env::var("METRICS_PREFIX").ok(),
+            sample_rate: env::var("METRICS_SAMPLE_RATE")
+                .ok()
+                .and_then(|s| s.parse().ok()),
         }
     }
 }

@@ -1930,6 +1930,7 @@ dependencies = [
  "actix-web",
  "async-trait",
  "env_logger",
+ "fastrand",
  "futures",
  "log",
  "prometheus",

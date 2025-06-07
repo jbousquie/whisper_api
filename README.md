@@ -75,6 +75,7 @@ The application can be configured using the following environment variables:
 | `WHISPER_API_KEEPALIVE` | Keep-alive timeout in seconds | `480` |
 | `WHISPER_JOB_RETENTION_HOURS` | Number of hours to keep job files before automatic cleanup | `48` |
 | `WHISPER_CLEANUP_INTERVAL_HOURS` | Interval in hours between cleanup runs | `1` |
+| `MAX_FILE_SIZE` | Maximum file size for uploads in bytes | `536870912` (512MB) |
 | `RUST_LOG` | Logging level (error, warn, info, debug, trace) | `info` |
 | `HF_TOKEN` | Hugging Face API token for diarization models access (can alternatively be passed per-request or loaded from file) | None |
 | `WHISPER_HF_TOKEN_FILE` | Path to file containing Hugging Face API token | `/home/llm/whisper_api/hf_token.txt` |
@@ -207,6 +208,9 @@ WHISPER_OUTPUT_FORMAT = "srt"
 # Job Management Configuration
 WHISPER_JOB_RETENTION_HOURS = 24
 WHISPER_CLEANUP_INTERVAL_HOURS = 6
+
+# Upload Configuration
+MAX_FILE_SIZE = 1073741824  # 1GB
 ```
 
 ## Test Commands
@@ -229,7 +233,7 @@ curl -X GET "http://localhost:8181/transcription/YOUR_JOB_ID" \
   -H "Authorization: Bearer your_token_here"
 ```
 
-Note: The maximum file size accepted is 512 MB.
+Note: The maximum file size is configurable using the `MAX_FILE_SIZE` setting (default: 512 MB).
 
 ### Examples
 

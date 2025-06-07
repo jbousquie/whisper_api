@@ -11,7 +11,7 @@ mod metrics;
 mod models;
 mod queue_manager;
 
-use crate::metrics::metrics::{create_metrics_exporter,Metrics};
+use crate::metrics::metrics::{create_metrics_exporter, Metrics};
 use config::{HandlerConfig, MetricsConfig};
 
 // Import the types we need
@@ -22,9 +22,8 @@ use queue_manager::{QueueManager, WhisperConfig};
 
 const DEFAULT_WHISPER_API_HOST: &str = "127.0.0.1";
 const DEFAULT_WHISPER_API_PORT: &str = "8181";
-const DEFAULT_WHISPER_API_TIMEOUT: u64 = 480;
-const DEFAULT_WHISPER_API_KEEPALIVE: u64 = 480;
-// Can be : "prometheus" or "none" - TODO : statsd
+const DEFAULT_WHISPER_API_TIMEOUT_SECONDS: u64 = 480; // 8 minutes
+const DEFAULT_WHISPER_API_KEEPALIVE_SECONDS: u64 = 480; // 8 minutes
 const DEFAULT_METRICS_EXPORTER: &str = "none";
 
 /// Metrics endpoint handler
@@ -78,18 +77,20 @@ async fn main() -> std::io::Result<()> {
         std::env::var("WHISPER_API_HOST").unwrap_or_else(|_| DEFAULT_WHISPER_API_HOST.to_string());
     let port =
         std::env::var("WHISPER_API_PORT").unwrap_or_else(|_| DEFAULT_WHISPER_API_PORT.to_string());
+
     let timeout = std::time::Duration::from_secs(
         std::env::var("WHISPER_API_TIMEOUT")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(DEFAULT_WHISPER_API_TIMEOUT),
+            .unwrap_or(DEFAULT_WHISPER_API_TIMEOUT_SECONDS),
     );
     let keep_alive = std::time::Duration::from_secs(
         std::env::var("WHISPER_API_KEEPALIVE")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(DEFAULT_WHISPER_API_KEEPALIVE),
+            .unwrap_or(DEFAULT_WHISPER_API_KEEPALIVE_SECONDS),
     );
+
     info!("Starting Whisper API server on http://{}:{}", host, port);
     info!("Using temp directory: {}", tmp_dir);
     info!("WhisperX command: {}", command_path);

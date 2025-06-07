@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use thiserror::Error;
 use tokio::sync::{mpsc, Mutex};
+use crate::metrics::Metrics;
 
 const DEFAULT_WHISPER_CMD: &str = "/home/llm/whisper_api/whisperx.sh";
 const DEFAULT_WHISPER_MODELS_DIR: &str = "/home/llm/models/whisperx_models";
@@ -214,17 +215,15 @@ pub struct QueueManager {
     /// This single channel is used to send jobs to a single background task,
     /// ensuring jobs are processed one at a time in the order they're received.
     job_tx: mpsc::Sender<TranscriptionJob>,
+    /// Metrics collection and export
+    metrics: Metrics,
 }
 
-impl QueueManager {
-
-    /// Create a new queue manager instance and start background processing
-    pub fn new(config: WhisperConfig) -> Arc<Mutex<Self>> {
+impl QueueManager {    /// Create a new queue manager instance and start background processing
+    pub fn new(config: WhisperConfig, metrics: Metrics) -> Arc<Mutex<Self>> {
         // Create channels for job processing
         // This single channel approach ensures jobs are processed sequentially
-        let (job_tx, job_rx) = mpsc::channel(100);
-
-        // Initialize internal state
+        let (job_tx, job_rx) = mpsc::channel(100);        // Initialize internal state
         let state = Arc::new(Mutex::new(QueueState {
             queue: VecDeque::new(),
             statuses: HashMap::new(),
@@ -237,25 +236,25 @@ impl QueueManager {
         let manager = Arc::new(Mutex::new(Self {
             state: state.clone(),
             job_tx: job_tx.clone(),
+            metrics: metrics.clone(),
         }));
 
         // Start the background processor - only one processor task is created
         // This single task listens to the job channel and processes jobs one at a time
-        Self::start_job_processor(job_rx, job_tx, state.clone(), config);
+        Self::start_job_processor(job_rx, job_tx, state.clone(), config, metrics);
 
         // Start the cleanup task
         Self::start_cleanup_task(Arc::clone(&manager));
 
         manager
-    }
-
-    /// Start the background job processor
+    }    /// Start the background job processor
     /// This creates a single processing task that handles one job at a time
     fn start_job_processor(
         mut job_rx: mpsc::Receiver<TranscriptionJob>,
         job_tx: mpsc::Sender<TranscriptionJob>,
         state: Arc<Mutex<QueueState>>,
         config: WhisperConfig,
+        metrics: Metrics,
     ) {
         tokio::spawn(async move {
             info!("Job processor started");
@@ -263,9 +262,17 @@ impl QueueManager {
             // Process jobs one at a time in the order they're received
             // This loop ensures sequential processing - one job must complete
             // before the next one is handled
-            while let Some(job) = job_rx.recv().await {
-                let job_id = job.id.clone();
+            while let Some(job) = job_rx.recv().await {                let job_id = job.id.clone();
                 info!("Processing job: {}", job_id);
+
+                // Record job processing start and update queue size
+                metrics.record_job_processing_start().await;
+                
+                // Update queue size metrics (job is now dequeued)
+                {
+                    let state_guard = state.lock().await;
+                    metrics.record_queue_size(state_guard.queue.len()).await;
+                }
 
                 // Update job status to processing
                 {
@@ -273,10 +280,8 @@ impl QueueManager {
                     state_guard
                         .statuses
                         .insert(job_id.clone(), JobStatus::Processing);
-                }
-
-                // Process the job
-                let result = Self::process_transcription(job.clone(), &config, state.clone()).await;
+                }// Process the job
+                let result = Self::process_transcription(job.clone(), &config, state.clone(), &metrics).await;
 
                 // Update job status based on result
                 {
@@ -359,15 +364,18 @@ impl QueueManager {
         }
 
         Ok(())
-    }
-
-    /// Process a transcription job by invoking WhisperX
+    }    /// Process a transcription job by invoking WhisperX
     async fn process_transcription(
         job: TranscriptionJob,
         config: &WhisperConfig,
         state: Arc<Mutex<QueueState>>,
+        metrics: &Metrics,
     ) -> Result<TranscriptionResult, QueueError> {
+        let start_time = std::time::Instant::now();
         debug!("Processing job {}", job.id);
+
+        // Record job processing start
+        metrics.record_job_submitted(&job.model, &job.language).await;
 
         // Validate output format if provided
         // This determines the output file format (e.g., srt, vtt, txt, json)
@@ -423,14 +431,23 @@ impl QueueManager {
 
         // Store the output file path in the job metadata for later cleanup
         // This will be retrieved and used during cleanup to remove the output file
-        let output_file_path_clone = output_file_path.clone();
-
-        let output = command
+        let output_file_path_clone = output_file_path.clone();        let output = command
             .output()
-            .map_err(|e| QueueError::TranscriptionError(format!("Failed to run command: {}", e)))?;
+            .map_err(|e| {
+                let duration = start_time.elapsed().as_secs_f64();
+                // We need to use blocking call here since we're in a sync error context
+                tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(async {
+                        metrics.record_job_completed(&job.model, &job.language, duration, "failed").await;
+                    })
+                });
+                QueueError::TranscriptionError(format!("Failed to run command: {}", e))
+            })?;
 
         if !output.status.success() {
             let error = String::from_utf8_lossy(&output.stderr).to_string();
+            let duration = start_time.elapsed().as_secs_f64();
+            metrics.record_job_completed(&job.model, &job.language, duration, "failed").await;
             return Err(QueueError::TranscriptionError(error));
         }
 
@@ -453,14 +470,16 @@ impl QueueManager {
             if let Some(metadata) = state_guard.job_metadata.get_mut(&job.id) {
                 metadata.output_file_path = Some(output_file_path_clone);
             }
-        }
-
-        // Create result with the file content as-is
+        }        // Create result with the file content as-is
         let result = TranscriptionResult {
             text: file_content,
             language: job.language.clone(),
             segments: Vec::new(),
         };
+
+        // Record metrics for job completion
+        let duration = start_time.elapsed().as_secs_f64();
+        metrics.record_job_completed(&job.model, &job.language, duration, "success").await;
 
         Ok(result)
     }
@@ -547,19 +566,22 @@ impl QueueManager {
         }
 
         Ok(cleanup_count)
-    }
-
-    /// Add a job to the queue
+    }    /// Add a job to the queue
     /// This is the entry point for new transcription requests
     pub async fn add_job(&self, job: TranscriptionJob) -> Result<(), QueueError> {
         let job_id = job.id.clone();
+
+        // Record file size metrics
+        if let Ok(metadata) = std::fs::metadata(&job.audio_file) {
+            self.metrics.record_file_size(metadata.len() as f64).await;
+        }
 
         // Validate output format if provided
         if let Some(format) = &job.output_format {
             WhisperConfig::validate_output_format(format.as_str())?;
         }
 
-        {
+        let queue_size = {
             // Acquire mutex lock to safely modify state
             // This ensures thread-safe access to the job queue and other state
             let mut state = self.state.lock().await;
@@ -576,9 +598,15 @@ impl QueueManager {
 
             // Add job to queue (FIFO order) and update status
             // Jobs are always added to the back of the queue
-            state.queue.push_back(job);
+            state.queue.push_back(job.clone());
             state.statuses.insert(job_id.clone(), JobStatus::Queued);
-        } // Lock is automatically released when state goes out of scope
+            
+            state.queue.len()
+        }; // Lock is automatically released when state goes out of scope
+
+        // Record metrics for job submission and queue size
+        self.metrics.record_job_submitted(&job.model, &job.language).await;
+        self.metrics.set_queue_size(queue_size as f64).await;
 
         // Check if we need to start processing
         // This will only start a job if nothing is currently processing
@@ -655,8 +683,10 @@ impl QueueManager {
         // Check if job exists
         if let Some(status) = state.statuses.get(job_id) {
             // Only allow cancellation of queued jobs, not processing or completed jobs
-            match status {
-                JobStatus::Queued => {
+            match status {                JobStatus::Queued => {
+                    // Get job details for metrics before removal
+                    let job_for_metrics = state.queue.iter().find(|job| job.id == job_id).cloned();
+                    
                     // Remove the job from the queue if it's there
                     state.queue.retain(|job| job.id != job_id);
 
@@ -674,6 +704,11 @@ impl QueueManager {
 
                     // Drop the lock before filesystem operations
                     drop(state);
+
+                    // Record cancellation metrics if we found the job
+                    if let Some(job) = job_for_metrics {
+                        self.metrics.record_job_cancelled(&job.model, &job.language).await;
+                    }
 
                     // Remove job files if we have a path
                     if let Some(path) = folder_path {

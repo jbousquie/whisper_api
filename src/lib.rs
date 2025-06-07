@@ -9,6 +9,7 @@ pub mod file_utils;
 pub mod handlers;
 pub mod models;
 pub mod queue_manager;
+pub mod metrics;
 
 // Re-export common types for easier access
 pub use config::HandlerConfig;

@@ -74,6 +74,25 @@ impl HandlerConfig {
     }
 }
 
+/// Configuration for metrics collection and export
+#[derive(Clone, Debug)]
+pub struct MetricsConfig {
+    /// Type of metrics exporter ("prometheus", "statsd", "none")
+    pub exporter_type: String,
+    /// Endpoint for metrics exporter (if applicable)
+    pub endpoint: Option<String>,
+}
+
+impl Default for MetricsConfig {
+    fn default() -> Self {
+        Self {
+            exporter_type: env::var("METRICS_EXPORTER")
+                .unwrap_or_else(|_| "none".to_string()),
+            endpoint: env::var("METRICS_ENDPOINT").ok(),
+        }
+    }
+}
+
 /// Represents the path to a job's files
 #[derive(Debug, Clone)]
 pub struct JobPaths {

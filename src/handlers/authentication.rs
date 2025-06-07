@@ -47,12 +47,29 @@ where
     type Error = Error;
     type Future = LocalBoxFuture<'static, Result<Self::Response, Self::Error>>;
 
-    forward_ready!(service);
-
-    fn call(&self, req: ServiceRequest) -> Self::Future {
+    forward_ready!(service);    fn call(&self, req: ServiceRequest) -> Self::Future {
         let authenticate_result = authenticate(&req);
-
-        if authenticate_result.is_err() {
+        
+        // Record authentication attempts - we'll use app_data to get metrics if available
+        if let Some(metrics) = req.app_data::<actix_web::web::Data<crate::metrics::Metrics>>() {
+            let metrics = metrics.clone();
+            
+            if authenticate_result.is_err() {
+                // Record failed authentication
+                let metrics_clone = metrics.clone();
+                tokio::spawn(async move {
+                    metrics_clone.record_auth_attempt("failed").await;
+                });
+                let error = authenticate_result.err().unwrap();
+                return Box::pin(async move { Err(error) });
+            } else {
+                // Record successful authentication
+                let metrics_clone = metrics.clone();
+                tokio::spawn(async move {
+                    metrics_clone.record_auth_attempt("success").await;
+                });
+            }
+        } else if authenticate_result.is_err() {
             let error = authenticate_result.err().unwrap();
             return Box::pin(async move { Err(error) });
         }

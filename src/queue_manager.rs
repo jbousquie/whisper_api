@@ -7,6 +7,7 @@
 use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -196,10 +197,10 @@ struct QueueState {
     statuses: HashMap<String, JobStatus>,
     /// Map of job results by job ID
     results: HashMap<String, TranscriptionResult>,
-    /// Flag indicating if a job is currently being processed
-    /// This is the key mechanism that ensures only one job runs at a time.
-    /// When true, no new jobs will be started from the queue.
-    processing: bool,
+    /// Count of jobs currently being processed
+    processing_count: usize,
+    /// Set of job IDs currently being processed
+    processing_jobs: HashSet<String>,
     /// Map of job metadata by job ID
     job_metadata: HashMap<String, JobMetadata>,
 }
@@ -208,28 +209,41 @@ struct QueueState {
 pub struct QueueManager {
     /// Internal state protected by a mutex
     /// The mutex ensures that all state access is atomic and thread-safe,
-    /// preventing race conditions when checking or updating the processing flag.
+    /// preventing race conditions when checking or updating the processing state.
     state: Arc<Mutex<QueueState>>,
     /// Job processor channel
-    /// This single channel is used to send jobs to a single background task,
-    /// ensuring jobs are processed one at a time in the order they're received.
+    /// This channel is used to send jobs to the processing system.
     job_tx: mpsc::Sender<TranscriptionJob>,
+    /// Flag to enable concurrent processing of jobs
+    enable_concurrency: bool,
+    /// Maximum number of jobs that can be processed concurrently
+    max_concurrent_jobs: usize,
 }
 
 impl QueueManager {
-
     /// Create a new queue manager instance and start background processing
     pub fn new(config: WhisperConfig) -> Arc<Mutex<Self>> {
         // Create channels for job processing
-        // This single channel approach ensures jobs are processed sequentially
         let (job_tx, job_rx) = mpsc::channel(100);
+
+        // Get concurrency settings
+        let enable_concurrency = std::env::var("ENABLE_CONCURRENCY")
+            .ok()
+            .and_then(|s| s.parse::<bool>().ok())
+            .unwrap_or(false);
+
+        let max_concurrent_jobs = std::env::var("MAX_CONCURRENT_JOBS")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(6);
 
         // Initialize internal state
         let state = Arc::new(Mutex::new(QueueState {
             queue: VecDeque::new(),
             statuses: HashMap::new(),
             results: HashMap::new(),
-            processing: false, // Initially not processing any job
+            processing_count: 0,             // Initially not processing any job
+            processing_jobs: HashSet::new(), // No jobs being processed
             job_metadata: HashMap::new(),
         }));
 
@@ -237,11 +251,19 @@ impl QueueManager {
         let manager = Arc::new(Mutex::new(Self {
             state: state.clone(),
             job_tx: job_tx.clone(),
+            enable_concurrency,
+            max_concurrent_jobs,
         }));
 
-        // Start the background processor - only one processor task is created
-        // This single task listens to the job channel and processes jobs one at a time
-        Self::start_job_processor(job_rx, job_tx, state.clone(), config);
+        // Start the background processor
+        Self::start_job_processor(
+            job_rx,
+            job_tx,
+            state.clone(),
+            config,
+            enable_concurrency,
+            max_concurrent_jobs,
+        );
 
         // Start the cleanup task
         Self::start_cleanup_task(Arc::clone(&manager));
@@ -256,13 +278,20 @@ impl QueueManager {
         job_tx: mpsc::Sender<TranscriptionJob>,
         state: Arc<Mutex<QueueState>>,
         config: WhisperConfig,
+        enable_concurrency: bool,
+        max_concurrent_jobs: usize,
     ) {
         tokio::spawn(async move {
             info!("Job processor started");
+            if enable_concurrency {
+                info!(
+                    "Concurrent processing enabled. Max concurrent jobs: {}",
+                    max_concurrent_jobs
+                );
+            } else {
+                info!("Sequential processing enabled (one job at a time)");
+            }
 
-            // Process jobs one at a time in the order they're received
-            // This loop ensures sequential processing - one job must complete
-            // before the next one is handled
             while let Some(job) = job_rx.recv().await {
                 let job_id = job.id.clone();
                 info!("Processing job: {}", job_id);
@@ -273,101 +302,120 @@ impl QueueManager {
                     state_guard
                         .statuses
                         .insert(job_id.clone(), JobStatus::Processing);
+                    state_guard.processing_count += 1;
+                    state_guard.processing_jobs.insert(job_id.clone());
                 }
 
-                // Process the job
-                let result = Self::process_transcription(job.clone(), &config, state.clone()).await;
+                // Spawn a task for this job
+                let job_clone = job.clone();
+                let state_clone = state.clone();
+                let config_clone = config.clone();
+                let job_tx_clone = job_tx.clone();
 
-                // Update job status based on result
-                {
-                    let mut state_guard = state.lock().await;
-                    match &result {
-                        Ok(result) => {
-                            info!("Job {} completed successfully", job_id);
-                            state_guard
-                                .statuses
-                                .insert(job_id.clone(), JobStatus::Completed);
-                            state_guard.results.insert(job_id.clone(), result.clone());
-                            
-                            // The output file path is already set in process_transcription
+                tokio::spawn(async move {
+                    // Process the job
+                    let result =
+                        Self::process_transcription(job_clone, &config_clone, state_clone.clone())
+                            .await;
+
+                    // Update job status based on result
+                    {
+                        let mut state_guard = state_clone.lock().await;
+                        match &result {
+                            Ok(result) => {
+                                info!("Job {} completed successfully", job_id);
+                                state_guard
+                                    .statuses
+                                    .insert(job_id.clone(), JobStatus::Completed);
+                                state_guard.results.insert(job_id.clone(), result.clone());
+                                // The output file path is already set in process_transcription
+                            }
+                            Err(e) => {
+                                error!("Job {} failed: {}", job_id, e);
+                                state_guard
+                                    .statuses
+                                    .insert(job_id.clone(), JobStatus::Failed(e.to_string()));
+                            }
                         }
-                        Err(e) => {
-                            error!("Job {} failed: {}", job_id, e);
-                            state_guard
-                                .statuses
-                                .insert(job_id.clone(), JobStatus::Failed(e.to_string()));
-                        }
+
+                        // Update processing count and remove from processing set
+                        state_guard.processing_count -= 1;
+                        state_guard.processing_jobs.remove(&job_id);
+
+                        // Check for more jobs if we haven't hit our concurrency limit
+                        Self::check_and_start_next_jobs(
+                            &mut state_guard,
+                            &job_tx_clone,
+                            enable_concurrency,
+                            max_concurrent_jobs,
+                        )
+                        .await;
                     }
-
-                    // Mark job as no longer processing - this is critical for the sequential processing
-                    // The flag must be cleared after a job finishes so the next job can start
-                    state_guard.processing = false;
-                }
-
-                // Sequential job chaining: after completing one job, check if there are more jobs
-                // and start the next one, maintaining the FIFO order
-                {
-                    let mut state_guard = state.lock().await;
-                    if !state_guard.queue.is_empty() {
-                        let next_job = state_guard.queue.pop_front().unwrap();
-                        // Set processing flag to true for the next job
-                        state_guard.processing = true;
-                        drop(state_guard); // Release lock before sending
-
-                        if let Err(e) = job_tx.send(next_job).await {
-                            error!("Failed to send next job to processor: {}", e);
-                            // Reset processing flag if we failed to send the job
-                            let mut state_guard = state.lock().await;
-                            state_guard.processing = false;
-                        }
-                    }
-                }
+                });
             }
 
             info!("Job processor stopped");
         });
     }
 
-    /// Check if there are jobs waiting and start the next one if not currently processing
-    /// This is the job starting logic that enforces sequential processing
-    async fn check_and_start_next_job(&self) -> Result<(), QueueError> {
-        // Check if we have jobs waiting and we're not currently processing one
-        // The critical part is checking !state_guard.processing which ensures
-        // we never start a new job if one is already running
-        let next_job = {
-            let mut state_guard = self.state.lock().await;
-            if !state_guard.processing && !state_guard.queue.is_empty() {
-                // Set flag BEFORE starting job to prevent concurrent starts
-                state_guard.processing = true;
-                state_guard.queue.pop_front()
+    // The check_and_start_next_job method has been removed as it's replaced by check_and_start_next_jobs
+    // which is directly called where needed
+
+    /// Process a transcription job by invoking WhisperX
+    async fn check_and_start_next_jobs(
+        state_guard: &mut QueueState,
+        job_tx: &mpsc::Sender<TranscriptionJob>,
+        enable_concurrency: bool,
+        max_concurrent_jobs: usize,
+    ) {
+        let available_slots = if enable_concurrency {
+            // In concurrent mode, check if we have capacity for more jobs
+            max_concurrent_jobs.saturating_sub(state_guard.processing_count)
+        } else {
+            // In sequential mode, only start a new job if nothing is processing
+            if state_guard.processing_count == 0 {
+                1
             } else {
-                None
+                0
             }
         };
 
-        // If we have a job to process, send it to the processor
-        if let Some(job) = next_job {
-            debug!("Starting next job: {}", job.id);
-            if let Err(e) = self.job_tx.send(job).await {
-                error!("Failed to send job to processor: {}", e);
+        // Start as many jobs as we have slots for
+        for _ in 0..available_slots {
+            if let Some(next_job) = state_guard.queue.pop_front() {
+                // Update processing count and set
+                let job_id = next_job.id.clone();
+                state_guard.processing_count += 1;
+                state_guard.processing_jobs.insert(job_id.clone());
+                state_guard.statuses.insert(job_id, JobStatus::Processing);
 
-                // Reset processing flag if we failed to send the job
-                let mut state_guard = self.state.lock().await;
-                state_guard.processing = false;
-                return Err(QueueError::QueueError(format!("Failed to send job: {}", e)));
+                // Clone the job before releasing lock
+                let job_to_send = next_job.clone();
+
+                // Send job to processor
+                let job_tx_clone = job_tx.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = job_tx_clone.send(job_to_send).await {
+                        error!("Failed to send job to processor: {}", e);
+                    }
+                });
+            } else {
+                // No more jobs in queue
+                break;
             }
         }
-
-        Ok(())
     }
 
-    /// Process a transcription job by invoking WhisperX
     async fn process_transcription(
         job: TranscriptionJob,
         config: &WhisperConfig,
         state: Arc<Mutex<QueueState>>,
     ) -> Result<TranscriptionResult, QueueError> {
-        debug!("Processing job {}", job.id);
+        debug!(
+            "Processing job {} (concurrent: {})",
+            job.id,
+            std::env::var("ENABLE_CONCURRENCY").unwrap_or_else(|_| "false".to_string())
+        );
 
         // Validate output format if provided
         // This determines the output file format (e.g., srt, vtt, txt, json)
@@ -446,7 +494,7 @@ impl QueueManager {
             .folder_path
             .join(format!("transcript.{}", output_format));
         fs::write(&job_result_path, &file_content).map_err(|e| QueueError::IoError(e))?;
-        
+
         // Update job metadata with output file path for later cleanup
         {
             let mut state_guard = state.lock().await;
@@ -559,6 +607,7 @@ impl QueueManager {
             WhisperConfig::validate_output_format(format.as_str())?;
         }
 
+        // Determine whether to queue or process immediately
         {
             // Acquire mutex lock to safely modify state
             // This ensures thread-safe access to the job queue and other state
@@ -574,20 +623,50 @@ impl QueueManager {
                 },
             );
 
-            // Add job to queue (FIFO order) and update status
-            // Jobs are always added to the back of the queue
-            state.queue.push_back(job);
-            state.statuses.insert(job_id.clone(), JobStatus::Queued);
+            // Determine whether to queue job or process immediately
+            let can_process_now = if self.enable_concurrency {
+                state.processing_count < self.max_concurrent_jobs
+            } else {
+                state.processing_count == 0
+            };
+
+            if can_process_now {
+                // Start processing immediately
+                state.processing_count += 1;
+                state.processing_jobs.insert(job_id.clone());
+                state.statuses.insert(job_id.clone(), JobStatus::Processing);
+
+                // Clone job for sending after releasing lock
+                let job_to_send = job;
+                drop(state); // Release lock before async operation
+
+                // Send job to processor
+                if let Err(e) = self.job_tx.send(job_to_send).await {
+                    // Reacquire lock to fix state if send fails
+                    let mut state = self.state.lock().await;
+                    state.processing_count -= 1;
+                    state.processing_jobs.remove(&job_id);
+                    error!("Failed to send job to processor: {}", e);
+                    return Err(QueueError::QueueError(format!(
+                        "Failed to send job to processor: {}",
+                        e
+                    )));
+                }
+            } else {
+                // Add job to queue (FIFO order) and update status
+                // Jobs are always added to the back of the queue
+                state.queue.push_back(job);
+                state.statuses.insert(job_id.clone(), JobStatus::Queued);
+
+                info!(
+                    "Job {} added to queue (position: {})",
+                    job_id,
+                    state.queue.len()
+                );
+            }
         } // Lock is automatically released when state goes out of scope
 
-        // Check if we need to start processing
-        // This will only start a job if nothing is currently processing
-        // which enforces the sequential processing requirement
-        if let Err(e) = self.check_and_start_next_job().await {
-            error!("Failed to start next job: {}", e);
-        }
-
-        info!("Job {} added to queue", job_id);
+        info!("Job {} registered", job_id);
         Ok(())
     }
 
@@ -602,30 +681,44 @@ impl QueueManager {
     }
 
     /// Get the position of a job in the queue (1-based index)
-    /// 
+    ///
     /// Returns Some(position) if the job is waiting in the queue, None if it's not in the queue
     /// Position 1 means it's the next job to be processed after the current one
     pub async fn get_job_position(&self, job_id: &str) -> Result<Option<usize>, QueueError> {
         let state = self.state.lock().await;
-        
+
         // First check if the job exists
         if !state.statuses.contains_key(job_id) {
             return Err(QueueError::JobNotFound(job_id.to_string()));
         }
-        
+
         // If the job is not in Queued status, it's not in the queue
         if !matches!(state.statuses.get(job_id), Some(JobStatus::Queued)) {
             return Ok(None);
         }
-        
+
         // Find the position of the job in the queue (1-based index)
         for (position, job) in state.queue.iter().enumerate() {
             if job.id == job_id {
                 // Add 1 to make it 1-based instead of 0-based
-                return Ok(Some(position + 1));
+                let position = position + 1;
+
+                // With concurrency enabled, we need to adjust the queue position
+                // to account for how many jobs might start simultaneously
+                if self.enable_concurrency && self.max_concurrent_jobs > 1 {
+                    let adjusted_position =
+                        (position + self.max_concurrent_jobs - 1) / self.max_concurrent_jobs;
+                    info!(
+                        "Job {} is at queue position {} (batch {})",
+                        job_id, position, adjusted_position
+                    );
+                    return Ok(Some(adjusted_position));
+                }
+
+                return Ok(Some(position));
             }
         }
-        
+
         // If we get here, the job is in Queued status but not in the queue
         // This should not happen, but we handle it just in case
         Ok(None)
@@ -654,7 +747,14 @@ impl QueueManager {
 
         // Check if job exists
         if let Some(status) = state.statuses.get(job_id) {
-            // Only allow cancellation of queued jobs, not processing or completed jobs
+            // Check if job is currently processing
+            if state.processing_jobs.contains(job_id) {
+                return Err(QueueError::CannotCancelJob(
+                    "Cannot cancel a job that is currently processing".to_string(),
+                ));
+            }
+
+            // Handle based on job status
             match status {
                 JobStatus::Queued => {
                     // Remove the job from the queue if it's there
@@ -686,9 +786,13 @@ impl QueueManager {
                     info!("Canceled job: {}", job_id);
                     Ok(())
                 }
-                JobStatus::Processing => Err(QueueError::CannotCancelJob(
-                    "Cannot cancel a job that is currently processing".to_string(),
-                )),
+                JobStatus::Processing => {
+                    // This shouldn't happen as we checked processing_jobs already
+                    // but handle it for safety
+                    Err(QueueError::CannotCancelJob(
+                        "Cannot cancel a job that is currently processing".to_string(),
+                    ))
+                }
                 JobStatus::Completed | JobStatus::Failed(_) => {
                     // For completed/failed jobs, we'll just clean them up
                     drop(state); // Release lock before calling another method
@@ -720,7 +824,11 @@ impl QueueManager {
             if let Some(metadata) = metadata {
                 // Clean up temporary folder
                 if let Err(e) = fs::remove_dir_all(&metadata.folder_path) {
-                    error!("Failed to remove job folder {}: {}", metadata.folder_path.display(), e);
+                    error!(
+                        "Failed to remove job folder {}: {}",
+                        metadata.folder_path.display(),
+                        e
+                    );
                     // Don't return error here, we still want to clean up the job state
                 }
 
@@ -728,10 +836,17 @@ impl QueueManager {
                 if let Some(output_path) = &metadata.output_file_path {
                     if output_path.exists() {
                         if let Err(e) = fs::remove_file(output_path) {
-                            error!("Failed to remove output file {}: {}", output_path.display(), e);
+                            error!(
+                                "Failed to remove output file {}: {}",
+                                output_path.display(),
+                                e
+                            );
                             // Continue with cleanup even if file removal fails
                         } else {
-                            debug!("Successfully removed output file: {}", output_path.display());
+                            debug!(
+                                "Successfully removed output file: {}",
+                                output_path.display()
+                            );
                         }
                     }
                 }

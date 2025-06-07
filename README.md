@@ -16,7 +16,8 @@ The Whisper API follows a queue-based architecture with modular components:
 
 2. **Queue Manager**:
    - Manages a FIFO queue of transcription jobs
-   - Processes one job at a time (sequential processing)
+   - Supports both sequential and concurrent processing modes (configurable via `ENABLE_CONCURRENCY`)
+   - Configurable number of concurrent jobs when concurrency is enabled (`MAX_CONCURRENT_JOBS`)
    - Invokes the WhisperX command to transcribe audio files
    - Stores results in a temporary directory
    - Tracks job status (queued, processing, completed, failed)
@@ -76,6 +77,8 @@ The application can be configured using the following environment variables:
 | `WHISPER_JOB_RETENTION_HOURS` | Number of hours to keep job files before automatic cleanup | `48` |
 | `WHISPER_CLEANUP_INTERVAL_HOURS` | Interval in hours between cleanup runs | `1` |
 | `MAX_FILE_SIZE` | Maximum file size for uploads in bytes | `536870912` (512MB) |
+| `ENABLE_CONCURRENCY` | Enable concurrent job processing | `false` |
+| `MAX_CONCURRENT_JOBS` | Maximum number of concurrent jobs (when enabled) | `6` |
 | `RUST_LOG` | Logging level (error, warn, info, debug, trace) | `info` |
 | `HF_TOKEN` | Hugging Face API token for diarization models access (can alternatively be passed per-request or loaded from file) | None |
 | `WHISPER_HF_TOKEN_FILE` | Path to file containing Hugging Face API token | `/home/llm/whisper_api/hf_token.txt` |
@@ -211,6 +214,10 @@ WHISPER_CLEANUP_INTERVAL_HOURS = 6
 
 # Upload Configuration
 MAX_FILE_SIZE = 1073741824  # 1GB
+
+# Concurrency Configuration
+ENABLE_CONCURRENCY = true
+MAX_CONCURRENT_JOBS = 6
 ```
 
 ## Test Commands
@@ -233,7 +240,10 @@ curl -X GET "http://localhost:8181/transcription/YOUR_JOB_ID" \
   -H "Authorization: Bearer your_token_here"
 ```
 
-Note: The maximum file size is configurable using the `MAX_FILE_SIZE` setting (default: 512 MB).
+Note: 
+- The maximum file size is configurable using the `MAX_FILE_SIZE` setting (default: 512 MB).
+- Job processing can be configured for concurrent operation by setting `ENABLE_CONCURRENCY=true` and `MAX_CONCURRENT_JOBS` to the desired number of simultaneous jobs (default: 6).
+- When concurrency is enabled, the queue position reflects the "batch" in which a job will be processed rather than its exact position in the queue.
 
 ### Examples
 
@@ -309,6 +319,24 @@ The API is organized into modular components:
 The `whisperx.sh` script is responsible for activating the Python virtual environment, running the WhisperX command with the provided arguments, and then deactivating the environment. This ensures proper execution of WhisperX without requiring the API to manage Python environments directly.
 
 The path to this script can be configured via the `WHISPER_CMD` setting in the configuration file or environment variable.
+
+## Processing Models
+
+The Whisper API supports two processing models that can be configured via the `ENABLE_CONCURRENCY` setting:
+
+1. **Sequential Processing** (default, `ENABLE_CONCURRENCY=false`):
+   - Jobs are processed one at a time in FIFO order
+   - Prevents GPU memory contention by ensuring only one transcription runs at a time
+   - Simplifies resource management and provides predictable processing
+   - Queue position directly indicates how many jobs are ahead in the queue
+   - Recommended for systems with limited GPU memory
+
+2. **Concurrent Processing** (`ENABLE_CONCURRENCY=true`):
+   - Multiple jobs can be processed simultaneously
+   - The number of concurrent jobs is controlled by the `MAX_CONCURRENT_JOBS` setting (default: 6)
+   - Increases throughput when sufficient GPU memory is available
+   - Queue positions are reported in "batches" based on concurrency level
+   - Optimal for systems with multiple GPUs or high-memory GPUs
 
 ## Security and Privacy
 

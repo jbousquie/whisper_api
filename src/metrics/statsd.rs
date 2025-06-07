@@ -1,9 +1,12 @@
+/// statsd exporter
+/// This module provides a placeholder implementation for StatsD metrics export.
+///
+/// TODO : implement StatsD metrics export functionality.
+///
 use crate::metrics::metrics::MetricsExporter;
-
 use async_trait::async_trait;
 use log::debug;
 
-/// TODO : StatsD implementation (placeholder for future implementation)
 pub struct StatsDExporter {
     // Future implementation for StatsD
     _endpoint: String,

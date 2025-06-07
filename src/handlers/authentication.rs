@@ -12,7 +12,6 @@ use actix_web::{
 use futures::future::{ok, LocalBoxFuture, Ready};
 use log::{debug, warn};
 
-
 /// Middleware factory for authentication
 pub struct Authentication;
 
@@ -53,7 +52,9 @@ where
         let authenticate_result = authenticate(&req);
 
         // Record authentication attempts - we'll use app_data to get metrics if available
-        if let Some(metrics) = req.app_data::<actix_web::web::Data<crate::metrics::metrics::Metrics>>() {
+        if let Some(metrics) =
+            req.app_data::<actix_web::web::Data<crate::metrics::metrics::Metrics>>()
+        {
             let metrics = metrics.clone();
 
             if authenticate_result.is_err() {

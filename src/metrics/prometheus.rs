@@ -1,12 +1,15 @@
+/// Prometheus metrics exporter implementation
+///
+/// It allows for the collection and export of metrics in a format compatible with Prometheus.
+/// 
+use crate::metrics::metrics::MetricsExporter;
+use async_trait::async_trait;
 use log::debug;
-use prometheus::{GaugeVec, CounterVec,HistogramVec, HistogramOpts, Opts, TextEncoder, Encoder};
+use log::warn;
 use prometheus::Registry;
+use prometheus::{CounterVec, Encoder, GaugeVec, HistogramOpts, HistogramVec, Opts, TextEncoder};
 use std::collections::HashMap;
 use tokio::sync::Mutex;
-use async_trait::async_trait;
-use crate::metrics::metrics::MetricsExporter;
-use log::warn;
-
 
 /// Prometheus implementation of MetricsExporter
 pub struct PrometheusExporter {

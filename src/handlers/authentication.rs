@@ -47,13 +47,14 @@ where
     type Error = Error;
     type Future = LocalBoxFuture<'static, Result<Self::Response, Self::Error>>;
 
-    forward_ready!(service);    fn call(&self, req: ServiceRequest) -> Self::Future {
+    forward_ready!(service);
+    fn call(&self, req: ServiceRequest) -> Self::Future {
         let authenticate_result = authenticate(&req);
-        
+
         // Record authentication attempts - we'll use app_data to get metrics if available
         if let Some(metrics) = req.app_data::<actix_web::web::Data<crate::metrics::Metrics>>() {
             let metrics = metrics.clone();
-            
+
             if authenticate_result.is_err() {
                 // Record failed authentication
                 let metrics_clone = metrics.clone();
@@ -92,13 +93,15 @@ fn authenticate(req: &ServiceRequest) -> Result<(), Error> {
             if auth_str.starts_with("Bearer ") {
                 let token = &auth_str[7..]; // Skip "Bearer " prefix
                 debug!("Request received with token: {}", token);
-                
+
                 // For now, accept any token (dummy verification)
                 // In a real implementation, this would validate the token
                 return Ok(());
             } else {
                 warn!("Invalid Authorization header format, missing 'Bearer' prefix");
-                return Err(ErrorUnauthorized("Invalid Authorization header format. Must be 'Bearer <token>'"));
+                return Err(ErrorUnauthorized(
+                    "Invalid Authorization header format. Must be 'Bearer <token>'",
+                ));
             }
         } else {
             warn!("Authorization header contains invalid characters");

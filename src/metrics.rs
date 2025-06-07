@@ -200,7 +200,7 @@ impl MetricsExporter for NullExporter {
     }
 }
 
-/// StatsD implementation (placeholder for future implementation)
+/// TODO : StatsD implementation (placeholder for future implementation)
 pub struct StatsDExporter {
     // Future implementation for StatsD
     _endpoint: String,
@@ -217,17 +217,17 @@ impl StatsDExporter {
 #[async_trait]
 impl MetricsExporter for StatsDExporter {
     async fn increment(&self, _name: &str, _labels: &[(&str, &str)]) {
-        // TODO: Implement StatsD counter increment
+        // TODO: implement StatsD counter increment
         debug!("StatsD increment not yet implemented");
     }
 
     async fn set_gauge(&self, _name: &str, _value: f64, _labels: &[(&str, &str)]) {
-        // TODO: Implement StatsD gauge set
+        // TODO: implement StatsD gauge set
         debug!("StatsD gauge set not yet implemented");
     }
 
     async fn observe_histogram(&self, _name: &str, _value: f64, _labels: &[(&str, &str)]) {
-        // TODO: Implement StatsD histogram observe
+        // TODO: implement StatsD histogram observe
         debug!("StatsD histogram observe not yet implemented");
     }
 

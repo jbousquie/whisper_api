@@ -4,6 +4,7 @@
 //! requests asynchronously. It processes one job at a time to ensure WhisperX can use all available
 //! physical resources for each transcription job.
 
+use crate::metrics::Metrics;
 use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -15,7 +16,6 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use thiserror::Error;
 use tokio::sync::{mpsc, Mutex};
-use crate::metrics::Metrics;
 
 const DEFAULT_WHISPER_CMD: &str = "/home/llm/whisper_api/whisperx.sh";
 const DEFAULT_WHISPER_MODELS_DIR: &str = "/home/llm/models/whisperx_models";
@@ -219,11 +219,12 @@ pub struct QueueManager {
     metrics: Metrics,
 }
 
-impl QueueManager {    /// Create a new queue manager instance and start background processing
+impl QueueManager {
+    /// Create a new queue manager instance and start background processing
     pub fn new(config: WhisperConfig, metrics: Metrics) -> Arc<Mutex<Self>> {
         // Create channels for job processing
         // This single channel approach ensures jobs are processed sequentially
-        let (job_tx, job_rx) = mpsc::channel(100);        // Initialize internal state
+        let (job_tx, job_rx) = mpsc::channel(100); // Initialize internal state
         let state = Arc::new(Mutex::new(QueueState {
             queue: VecDeque::new(),
             statuses: HashMap::new(),
@@ -247,7 +248,8 @@ impl QueueManager {    /// Create a new queue manager instance and start backgro
         Self::start_cleanup_task(Arc::clone(&manager));
 
         manager
-    }    /// Start the background job processor
+    }
+    /// Start the background job processor
     /// This creates a single processing task that handles one job at a time
     fn start_job_processor(
         mut job_rx: mpsc::Receiver<TranscriptionJob>,
@@ -262,17 +264,18 @@ impl QueueManager {    /// Create a new queue manager instance and start backgro
             // Process jobs one at a time in the order they're received
             // This loop ensures sequential processing - one job must complete
             // before the next one is handled
-            while let Some(job) = job_rx.recv().await {                let job_id = job.id.clone();
+            while let Some(job) = job_rx.recv().await {
+                let job_id = job.id.clone();
                 info!("Processing job: {}", job_id);
 
                 // Record job processing start and update queue size
                 metrics.record_job_processing_start().await;
-                
+
                 // Update queue size metrics (job is now dequeued)
                 {
                     let state_guard = state.lock().await;
                     metrics.record_queue_size(state_guard.queue.len()).await;
-                }                // Update job status to processing
+                } // Update job status to processing
                 {
                     let mut state_guard = state.lock().await;
                     state_guard
@@ -281,8 +284,10 @@ impl QueueManager {    /// Create a new queue manager instance and start backgro
                 }
 
                 // Record that a job is now processing
-                metrics.set_jobs_processing(1.0).await;// Process the job
-                let result = Self::process_transcription(job.clone(), &config, state.clone(), &metrics).await;
+                metrics.set_jobs_processing(1.0).await; // Process the job
+                let result =
+                    Self::process_transcription(job.clone(), &config, state.clone(), &metrics)
+                        .await;
 
                 // Update job status based on result
                 {
@@ -294,7 +299,7 @@ impl QueueManager {    /// Create a new queue manager instance and start backgro
                                 .statuses
                                 .insert(job_id.clone(), JobStatus::Completed);
                             state_guard.results.insert(job_id.clone(), result.clone());
-                            
+
                             // The output file path is already set in process_transcription
                         }
                         Err(e) => {
@@ -303,8 +308,8 @@ impl QueueManager {    /// Create a new queue manager instance and start backgro
                                 .statuses
                                 .insert(job_id.clone(), JobStatus::Failed(e.to_string()));
                         }
-                    }                    // Mark job as no longer processing - this is critical for the sequential processing
-                    // The flag must be cleared after a job finishes so the next job can start
+                    } // Mark job as no longer processing - this is critical for the sequential processing
+                      // The flag must be cleared after a job finishes so the next job can start
                     state_guard.processing = false;
                 }
 
@@ -315,18 +320,20 @@ impl QueueManager {    /// Create a new queue manager instance and start backgro
                 // and start the next one, maintaining the FIFO order
                 {
                     let mut state_guard = state.lock().await;
-                    if !state_guard.queue.is_empty() {                        let next_job = state_guard.queue.pop_front().unwrap();
+                    if !state_guard.queue.is_empty() {
+                        let next_job = state_guard.queue.pop_front().unwrap();
                         // Set processing flag to true for the next job
                         state_guard.processing = true;
                         drop(state_guard); // Release lock before sending
 
                         // Record that a job is now processing
-                        metrics.set_jobs_processing(1.0).await;                        if let Err(e) = job_tx.send(next_job).await {
+                        metrics.set_jobs_processing(1.0).await;
+                        if let Err(e) = job_tx.send(next_job).await {
                             error!("Failed to send next job to processor: {}", e);
                             // Reset processing flag if we failed to send the job
                             let mut state_guard = state.lock().await;
                             state_guard.processing = false;
-                            
+
                             // Reset jobs processing metric
                             metrics.set_jobs_processing(0.0).await;
                         }
@@ -353,28 +360,29 @@ impl QueueManager {    /// Create a new queue manager instance and start backgro
             } else {
                 None
             }
-        };        // If we have a job to process, send it to the processor
+        }; // If we have a job to process, send it to the processor
         if let Some(job) = next_job {
             debug!("Starting next job: {}", job.id);
-            
+
             // Record that a job is now processing
             self.metrics.set_jobs_processing(1.0).await;
-              if let Err(e) = self.job_tx.send(job).await {
+            if let Err(e) = self.job_tx.send(job).await {
                 error!("Failed to send job to processor: {}", e);
 
                 // Reset processing flag if we failed to send the job
                 let mut state_guard = self.state.lock().await;
                 state_guard.processing = false;
-                
+
                 // Reset jobs processing metric
                 self.metrics.set_jobs_processing(0.0).await;
-                
+
                 return Err(QueueError::QueueError(format!("Failed to send job: {}", e)));
             }
         }
 
         Ok(())
-    }    /// Process a transcription job by invoking WhisperX
+    }
+    /// Process a transcription job by invoking WhisperX
     async fn process_transcription(
         job: TranscriptionJob,
         config: &WhisperConfig,
@@ -385,7 +393,9 @@ impl QueueManager {    /// Create a new queue manager instance and start backgro
         debug!("Processing job {}", job.id);
 
         // Record job processing start
-        metrics.record_job_submitted(&job.model, &job.language).await;
+        metrics
+            .record_job_submitted(&job.model, &job.language)
+            .await;
 
         // Validate output format if provided
         // This determines the output file format (e.g., srt, vtt, txt, json)
@@ -441,23 +451,26 @@ impl QueueManager {    /// Create a new queue manager instance and start backgro
 
         // Store the output file path in the job metadata for later cleanup
         // This will be retrieved and used during cleanup to remove the output file
-        let output_file_path_clone = output_file_path.clone();        let output = command
-            .output()
-            .map_err(|e| {
-                let duration = start_time.elapsed().as_secs_f64();
-                // We need to use blocking call here since we're in a sync error context
-                tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(async {
-                        metrics.record_job_completed(&job.model, &job.language, duration, "failed").await;
-                    })
-                });
-                QueueError::TranscriptionError(format!("Failed to run command: {}", e))
-            })?;
+        let output_file_path_clone = output_file_path.clone();
+        let output = command.output().map_err(|e| {
+            let duration = start_time.elapsed().as_secs_f64();
+            // We need to use blocking call here since we're in a sync error context
+            tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(async {
+                    metrics
+                        .record_job_completed(&job.model, &job.language, duration, "failed")
+                        .await;
+                })
+            });
+            QueueError::TranscriptionError(format!("Failed to run command: {}", e))
+        })?;
 
         if !output.status.success() {
             let error = String::from_utf8_lossy(&output.stderr).to_string();
             let duration = start_time.elapsed().as_secs_f64();
-            metrics.record_job_completed(&job.model, &job.language, duration, "failed").await;
+            metrics
+                .record_job_completed(&job.model, &job.language, duration, "failed")
+                .await;
             return Err(QueueError::TranscriptionError(error));
         }
 
@@ -473,14 +486,14 @@ impl QueueManager {    /// Create a new queue manager instance and start backgro
             .folder_path
             .join(format!("transcript.{}", output_format));
         fs::write(&job_result_path, &file_content).map_err(|e| QueueError::IoError(e))?;
-        
+
         // Update job metadata with output file path for later cleanup
         {
             let mut state_guard = state.lock().await;
             if let Some(metadata) = state_guard.job_metadata.get_mut(&job.id) {
                 metadata.output_file_path = Some(output_file_path_clone);
             }
-        }        // Create result with the file content as-is
+        } // Create result with the file content as-is
         let result = TranscriptionResult {
             text: file_content,
             language: job.language.clone(),
@@ -489,7 +502,9 @@ impl QueueManager {    /// Create a new queue manager instance and start backgro
 
         // Record metrics for job completion
         let duration = start_time.elapsed().as_secs_f64();
-        metrics.record_job_completed(&job.model, &job.language, duration, "success").await;
+        metrics
+            .record_job_completed(&job.model, &job.language, duration, "success")
+            .await;
 
         Ok(result)
     }
@@ -576,7 +591,8 @@ impl QueueManager {    /// Create a new queue manager instance and start backgro
         }
 
         Ok(cleanup_count)
-    }    /// Add a job to the queue
+    }
+    /// Add a job to the queue
     /// This is the entry point for new transcription requests
     pub async fn add_job(&self, job: TranscriptionJob) -> Result<(), QueueError> {
         let job_id = job.id.clone();
@@ -610,12 +626,14 @@ impl QueueManager {    /// Create a new queue manager instance and start backgro
             // Jobs are always added to the back of the queue
             state.queue.push_back(job.clone());
             state.statuses.insert(job_id.clone(), JobStatus::Queued);
-            
+
             state.queue.len()
         }; // Lock is automatically released when state goes out of scope
 
         // Record metrics for job submission and queue size
-        self.metrics.record_job_submitted(&job.model, &job.language).await;
+        self.metrics
+            .record_job_submitted(&job.model, &job.language)
+            .await;
         self.metrics.set_queue_size(queue_size as f64).await;
 
         // Check if we need to start processing
@@ -640,22 +658,22 @@ impl QueueManager {    /// Create a new queue manager instance and start backgro
     }
 
     /// Get the position of a job in the queue (1-based index)
-    /// 
+    ///
     /// Returns Some(position) if the job is waiting in the queue, None if it's not in the queue
     /// Position 1 means it's the next job to be processed after the current one
     pub async fn get_job_position(&self, job_id: &str) -> Result<Option<usize>, QueueError> {
         let state = self.state.lock().await;
-        
+
         // First check if the job exists
         if !state.statuses.contains_key(job_id) {
             return Err(QueueError::JobNotFound(job_id.to_string()));
         }
-        
+
         // If the job is not in Queued status, it's not in the queue
         if !matches!(state.statuses.get(job_id), Some(JobStatus::Queued)) {
             return Ok(None);
         }
-        
+
         // Find the position of the job in the queue (1-based index)
         for (position, job) in state.queue.iter().enumerate() {
             if job.id == job_id {
@@ -663,7 +681,7 @@ impl QueueManager {    /// Create a new queue manager instance and start backgro
                 return Ok(Some(position + 1));
             }
         }
-        
+
         // If we get here, the job is in Queued status but not in the queue
         // This should not happen, but we handle it just in case
         Ok(None)
@@ -693,10 +711,11 @@ impl QueueManager {    /// Create a new queue manager instance and start backgro
         // Check if job exists
         if let Some(status) = state.statuses.get(job_id) {
             // Only allow cancellation of queued jobs, not processing or completed jobs
-            match status {                JobStatus::Queued => {
+            match status {
+                JobStatus::Queued => {
                     // Get job details for metrics before removal
                     let job_for_metrics = state.queue.iter().find(|job| job.id == job_id).cloned();
-                    
+
                     // Remove the job from the queue if it's there
                     state.queue.retain(|job| job.id != job_id);
 
@@ -717,7 +736,9 @@ impl QueueManager {    /// Create a new queue manager instance and start backgro
 
                     // Record cancellation metrics if we found the job
                     if let Some(job) = job_for_metrics {
-                        self.metrics.record_job_cancelled(&job.model, &job.language).await;
+                        self.metrics
+                            .record_job_cancelled(&job.model, &job.language)
+                            .await;
                     }
 
                     // Remove job files if we have a path
@@ -765,7 +786,11 @@ impl QueueManager {    /// Create a new queue manager instance and start backgro
             if let Some(metadata) = metadata {
                 // Clean up temporary folder
                 if let Err(e) = fs::remove_dir_all(&metadata.folder_path) {
-                    error!("Failed to remove job folder {}: {}", metadata.folder_path.display(), e);
+                    error!(
+                        "Failed to remove job folder {}: {}",
+                        metadata.folder_path.display(),
+                        e
+                    );
                     // Don't return error here, we still want to clean up the job state
                 }
 
@@ -773,10 +798,17 @@ impl QueueManager {    /// Create a new queue manager instance and start backgro
                 if let Some(output_path) = &metadata.output_file_path {
                     if output_path.exists() {
                         if let Err(e) = fs::remove_file(output_path) {
-                            error!("Failed to remove output file {}: {}", output_path.display(), e);
+                            error!(
+                                "Failed to remove output file {}: {}",
+                                output_path.display(),
+                                e
+                            );
                             // Continue with cleanup even if file removal fails
                         } else {
-                            debug!("Successfully removed output file: {}", output_path.display());
+                            debug!(
+                                "Successfully removed output file: {}",
+                                output_path.display()
+                            );
                         }
                     }
                 }

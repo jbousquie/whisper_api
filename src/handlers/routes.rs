@@ -13,9 +13,9 @@ use tokio::sync::Mutex;
 use crate::config::HandlerConfig;
 use crate::error::HandlerError;
 use crate::handlers::form::extract_form_data;
-use crate::models::{SuccessResponse, TranscriptionResponse, StatusResponse};
-use crate::queue_manager::{JobStatus, QueueManager, TranscriptionJob};
 use crate::metrics::Metrics;
+use crate::models::{StatusResponse, SuccessResponse, TranscriptionResponse};
+use crate::queue_manager::{JobStatus, QueueManager, TranscriptionJob};
 
 /// Handler for transcription requests
 ///
@@ -37,9 +37,15 @@ pub async fn transcribe(
     // Log diarization status
     if params.diarize {
         if params.hf_token.is_some() {
-            info!("Job {} will use speaker diarization with provided HF token", job_paths.id);
+            info!(
+                "Job {} will use speaker diarization with provided HF token",
+                job_paths.id
+            );
         } else {
-            warn!("Job {} requested diarization but no HF token is available", job_paths.id);
+            warn!(
+                "Job {} requested diarization but no HF token is available",
+                job_paths.id
+            );
         }
     } else {
         info!("Job {} will not use speaker diarization", job_paths.id);
@@ -68,18 +74,20 @@ pub async fn transcribe(
     }
 
     // Generate status URL for client to check progress
-    let status_url = format!("/transcription/{}", job_paths.id);    // Return job ID and status URL to client
+    let status_url = format!("/transcription/{}", job_paths.id); // Return job ID and status URL to client
     info!("Job {} added to queue", job_paths.id);
-    
+
     let response = HttpResponse::Accepted().json(TranscriptionResponse {
         job_id: job_paths.id,
         status_url,
     });
-    
+
     // Record HTTP request metrics
     let duration = start_time.elapsed().as_secs_f64();
-    metrics.record_http_request("POST", "/transcribe", "202", duration).await;
-    
+    metrics
+        .record_http_request("POST", "/transcribe", "202", duration)
+        .await;
+
     Ok(response)
 }
 
@@ -99,29 +107,31 @@ pub async fn transcription_status(
     // Create lock scope to minimize lock duration
     let (status, queue_position) = {
         let queue_manager = queue_manager.lock().await;
-        
+
         // Get job status
         let status = queue_manager.get_job_status(&job_id).await?;
-        
+
         // Get queue position if job is in Queued status
         let position = if matches!(status, JobStatus::Queued) {
             queue_manager.get_job_position(&job_id).await?
         } else {
             None
         };
-        
+
         (status, position)
     };
-      // Create response with status and optional queue position
+    // Create response with status and optional queue position
     let response = StatusResponse {
         status,
         queue_position,
     };
-    
+
     // Record HTTP request metrics
     let duration = start_time.elapsed().as_secs_f64();
-    metrics.record_http_request("GET", "/transcription/{job_id}", "200", duration).await;
-    
+    metrics
+        .record_http_request("GET", "/transcription/{job_id}", "200", duration)
+        .await;
+
     Ok(HttpResponse::Ok().json(response))
 }
 
@@ -140,14 +150,16 @@ pub async fn transcription_result(
 
     // Get the job result
     let queue_manager = queue_manager.lock().await;
-    let result = queue_manager.get_job_result(&job_id).await?;    // Clean up the job files after delivering the result
+    let result = queue_manager.get_job_result(&job_id).await?; // Clean up the job files after delivering the result
     if let Err(e) = queue_manager.cleanup_job(&job_id).await {
         warn!("Failed to clean up job {}: {}", job_id, e);
     }
 
     // Record HTTP request metrics
     let duration = start_time.elapsed().as_secs_f64();
-    metrics.record_http_request("GET", "/transcription/{job_id}/result", "200", duration).await;
+    metrics
+        .record_http_request("GET", "/transcription/{job_id}/result", "200", duration)
+        .await;
 
     Ok(HttpResponse::Ok().json(result))
 }
@@ -166,12 +178,15 @@ pub async fn cancel_transcription(
 
     // Cancel the job
     let queue_manager = queue_manager.lock().await;
-    queue_manager.cancel_job(&job_id).await?;    info!("Successfully canceled job: {}", job_id);
-    
+    queue_manager.cancel_job(&job_id).await?;
+    info!("Successfully canceled job: {}", job_id);
+
     // Record HTTP request metrics
     let duration = start_time.elapsed().as_secs_f64();
-    metrics.record_http_request("DELETE", "/transcription/{job_id}", "200", duration).await;
-    
+    metrics
+        .record_http_request("DELETE", "/transcription/{job_id}", "200", duration)
+        .await;
+
     Ok(HttpResponse::Ok().json(SuccessResponse {
         success: true,
         message: "Job canceled successfully".to_string(),

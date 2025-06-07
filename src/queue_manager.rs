@@ -272,15 +272,16 @@ impl QueueManager {    /// Create a new queue manager instance and start backgro
                 {
                     let state_guard = state.lock().await;
                     metrics.record_queue_size(state_guard.queue.len()).await;
-                }
-
-                // Update job status to processing
+                }                // Update job status to processing
                 {
                     let mut state_guard = state.lock().await;
                     state_guard
                         .statuses
                         .insert(job_id.clone(), JobStatus::Processing);
-                }// Process the job
+                }
+
+                // Record that a job is now processing
+                metrics.set_jobs_processing(1.0).await;// Process the job
                 let result = Self::process_transcription(job.clone(), &config, state.clone(), &metrics).await;
 
                 // Update job status based on result
@@ -302,28 +303,32 @@ impl QueueManager {    /// Create a new queue manager instance and start backgro
                                 .statuses
                                 .insert(job_id.clone(), JobStatus::Failed(e.to_string()));
                         }
-                    }
-
-                    // Mark job as no longer processing - this is critical for the sequential processing
+                    }                    // Mark job as no longer processing - this is critical for the sequential processing
                     // The flag must be cleared after a job finishes so the next job can start
                     state_guard.processing = false;
                 }
+
+                // Record that no job is currently processing
+                metrics.set_jobs_processing(0.0).await;
 
                 // Sequential job chaining: after completing one job, check if there are more jobs
                 // and start the next one, maintaining the FIFO order
                 {
                     let mut state_guard = state.lock().await;
-                    if !state_guard.queue.is_empty() {
-                        let next_job = state_guard.queue.pop_front().unwrap();
+                    if !state_guard.queue.is_empty() {                        let next_job = state_guard.queue.pop_front().unwrap();
                         // Set processing flag to true for the next job
                         state_guard.processing = true;
                         drop(state_guard); // Release lock before sending
 
-                        if let Err(e) = job_tx.send(next_job).await {
+                        // Record that a job is now processing
+                        metrics.set_jobs_processing(1.0).await;                        if let Err(e) = job_tx.send(next_job).await {
                             error!("Failed to send next job to processor: {}", e);
                             // Reset processing flag if we failed to send the job
                             let mut state_guard = state.lock().await;
                             state_guard.processing = false;
+                            
+                            // Reset jobs processing metric
+                            metrics.set_jobs_processing(0.0).await;
                         }
                     }
                 }
@@ -348,17 +353,22 @@ impl QueueManager {    /// Create a new queue manager instance and start backgro
             } else {
                 None
             }
-        };
-
-        // If we have a job to process, send it to the processor
+        };        // If we have a job to process, send it to the processor
         if let Some(job) = next_job {
             debug!("Starting next job: {}", job.id);
-            if let Err(e) = self.job_tx.send(job).await {
+            
+            // Record that a job is now processing
+            self.metrics.set_jobs_processing(1.0).await;
+              if let Err(e) = self.job_tx.send(job).await {
                 error!("Failed to send job to processor: {}", e);
 
                 // Reset processing flag if we failed to send the job
                 let mut state_guard = self.state.lock().await;
                 state_guard.processing = false;
+                
+                // Reset jobs processing metric
+                self.metrics.set_jobs_processing(0.0).await;
+                
                 return Err(QueueError::QueueError(format!("Failed to send job: {}", e)));
             }
         }

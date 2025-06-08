@@ -1,6 +1,6 @@
 /// Null exporter for testing or when metrics are disabled
 /// This exporter does not collect or export any metrics, effectively acting as a no-op.
-/// 
+///
 use crate::metrics::metrics::MetricsExporter;
 use async_trait::async_trait;
 pub struct NullExporter;

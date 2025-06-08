@@ -1,13 +1,14 @@
 /// Prometheus metrics exporter implementation
 ///
 /// It allows for the collection and export of metrics in a format compatible with Prometheus.
-/// 
+///
 use crate::metrics::metrics::MetricsExporter;
 use async_trait::async_trait;
 use log::debug;
 use log::warn;
-use prometheus::Registry;
-use prometheus::{CounterVec, Encoder, GaugeVec, HistogramOpts, HistogramVec, Opts, TextEncoder};
+use prometheus::{
+    CounterVec, Encoder, GaugeVec, HistogramOpts, HistogramVec, Opts, Registry, TextEncoder,
+};
 use std::collections::HashMap;
 use tokio::sync::Mutex;
 
@@ -109,7 +110,7 @@ impl MetricsExporter for PrometheusExporter {
             .await;
 
         if label_names.is_empty() {
-            counter.with_label_values(&[]).inc();
+            counter.with_label_values(&[] as &[&str]).inc();
         } else {
             counter.with_label_values(&label_values).inc();
         }
@@ -124,7 +125,7 @@ impl MetricsExporter for PrometheusExporter {
             .await;
 
         if label_names.is_empty() {
-            gauge.with_label_values(&[]).set(value);
+            gauge.with_label_values(&[] as &[&str]).set(value);
         } else {
             gauge.with_label_values(&label_values).set(value);
         }
@@ -139,7 +140,7 @@ impl MetricsExporter for PrometheusExporter {
             .await;
 
         if label_names.is_empty() {
-            histogram.with_label_values(&[]).observe(value);
+            histogram.with_label_values(&[] as &[&str]).observe(value);
         } else {
             histogram.with_label_values(&label_values).observe(value);
         }

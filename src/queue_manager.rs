@@ -1,14 +1,15 @@
 //! Queue Manager for Whisper API
 //!
-//! This module implements a simple FIFO queue management system for processing audio transcription
-//! requests asynchronously. It processes one job at a time to ensure WhisperX can use all available
-//! physical resources for each transcription job.
+//! This module implements a configurable FIFO queue management system for processing audio transcription
+//! requests asynchronously. It supports both sequential processing (one job at a time) and concurrent
+//! processing (multiple jobs simultaneously) to optimize WhisperX resource utilization.
 
 use crate::metrics::error::validation;
 use crate::metrics::metrics::Metrics;
 use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -198,10 +199,10 @@ struct QueueState {
     statuses: HashMap<String, JobStatus>,
     /// Map of job results by job ID
     results: HashMap<String, TranscriptionResult>,
-    /// Flag indicating if a job is currently being processed
-    /// This is the key mechanism that ensures only one job runs at a time.
-    /// When true, no new jobs will be started from the queue.
-    processing: bool,
+    /// Count of jobs currently being processed
+    processing_count: usize,
+    /// Set of job IDs currently being processed
+    processing_jobs: HashSet<String>,
     /// Map of job metadata by job ID
     job_metadata: HashMap<String, JobMetadata>,
 }
@@ -210,27 +211,43 @@ struct QueueState {
 pub struct QueueManager {
     /// Internal state protected by a mutex
     /// The mutex ensures that all state access is atomic and thread-safe,
-    /// preventing race conditions when checking or updating the processing flag.
+    /// preventing race conditions when checking or updating the processing state.
     state: Arc<Mutex<QueueState>>,
     /// Job processor channel
-    /// This single channel is used to send jobs to a single background task,
-    /// ensuring jobs are processed one at a time in the order they're received.
+    /// This channel is used to send jobs to the processing system.
     job_tx: mpsc::Sender<TranscriptionJob>,
     /// Metrics collection and export
     metrics: Metrics,
+    /// Flag to enable concurrent processing of jobs
+    enable_concurrency: bool,
+    /// Maximum number of jobs that can be processed concurrently
+    max_concurrent_jobs: usize,
 }
 
 impl QueueManager {
     /// Create a new queue manager instance and start background processing
     pub fn new(config: WhisperConfig, metrics: Metrics) -> Arc<Mutex<Self>> {
         // Create channels for job processing
-        // This single channel approach ensures jobs are processed sequentially
-        let (job_tx, job_rx) = mpsc::channel(100); // Initialize internal state
+        let (job_tx, job_rx) = mpsc::channel(100);
+
+        // Get concurrency settings
+        let enable_concurrency = std::env::var("ENABLE_CONCURRENCY")
+            .ok()
+            .and_then(|s| s.parse::<bool>().ok())
+            .unwrap_or(false);
+
+        let max_concurrent_jobs = std::env::var("MAX_CONCURRENT_JOBS")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(6);
+
+        // Initialize internal state
         let state = Arc::new(Mutex::new(QueueState {
             queue: VecDeque::new(),
             statuses: HashMap::new(),
             results: HashMap::new(),
-            processing: false, // Initially not processing any job
+            processing_count: 0,
+            processing_jobs: HashSet::new(),
             job_metadata: HashMap::new(),
         }));
 
@@ -239,32 +256,48 @@ impl QueueManager {
             state: state.clone(),
             job_tx: job_tx.clone(),
             metrics: metrics.clone(),
+            enable_concurrency,
+            max_concurrent_jobs,
         }));
 
-        // Start the background processor - only one processor task is created
-        // This single task listens to the job channel and processes jobs one at a time
-        Self::start_job_processor(job_rx, job_tx, state.clone(), config, metrics);
+        // Start the background processor
+        Self::start_job_processor(
+            job_rx,
+            job_tx,
+            state.clone(),
+            config,
+            metrics,
+            enable_concurrency,
+            max_concurrent_jobs,
+        );
 
         // Start the cleanup task
         Self::start_cleanup_task(Arc::clone(&manager));
 
         manager
     }
+
     /// Start the background job processor
-    /// This creates a single processing task that handles one job at a time
     fn start_job_processor(
         mut job_rx: mpsc::Receiver<TranscriptionJob>,
         job_tx: mpsc::Sender<TranscriptionJob>,
         state: Arc<Mutex<QueueState>>,
         config: WhisperConfig,
         metrics: Metrics,
+        enable_concurrency: bool,
+        max_concurrent_jobs: usize,
     ) {
         tokio::spawn(async move {
             info!("Job processor started");
+            if enable_concurrency {
+                info!(
+                    "Concurrent processing enabled. Max concurrent jobs: {}",
+                    max_concurrent_jobs
+                );
+            } else {
+                info!("Sequential processing enabled (one job at a time)");
+            }
 
-            // Process jobs one at a time in the order they're received
-            // This loop ensures sequential processing - one job must complete
-            // before the next one is handled
             while let Some(job) = job_rx.recv().await {
                 let job_id = job.id.clone();
                 info!("Processing job: {}", job_id);
@@ -276,113 +309,142 @@ impl QueueManager {
                 {
                     let state_guard = state.lock().await;
                     metrics.record_queue_size(state_guard.queue.len()).await;
-                } // Update job status to processing
+                }
+
+                // Update job status to processing
                 {
                     let mut state_guard = state.lock().await;
                     state_guard
                         .statuses
                         .insert(job_id.clone(), JobStatus::Processing);
+                    state_guard.processing_count += 1;
+                    state_guard.processing_jobs.insert(job_id.clone());
                 }
 
-                // Record that a job is now processing
-                metrics.set_jobs_processing(1.0).await; // Process the job
-                let result =
-                    Self::process_transcription(job.clone(), &config, state.clone(), &metrics)
-                        .await;
-
-                // Update job status based on result
+                // Record current processing count
                 {
-                    let mut state_guard = state.lock().await;
-                    match &result {
-                        Ok(result) => {
-                            info!("Job {} completed successfully", job_id);
-                            state_guard
-                                .statuses
-                                .insert(job_id.clone(), JobStatus::Completed);
-                            state_guard.results.insert(job_id.clone(), result.clone());
-
-                            // The output file path is already set in process_transcription
-                        }
+                    let state_guard = state.lock().await;
+                    match validation::validate_usize_conversion(state_guard.processing_count) {
+                        Ok(safe_count) => metrics.set_jobs_processing(safe_count).await,
                         Err(e) => {
-                            error!("Job {} failed: {}", job_id, e);
-                            state_guard
-                                .statuses
-                                .insert(job_id.clone(), JobStatus::Failed(e.to_string()));
-                        }
-                    } // Mark job as no longer processing - this is critical for the sequential processing
-                      // The flag must be cleared after a job finishes so the next job can start
-                    state_guard.processing = false;
-                }
-
-                // Record that no job is currently processing
-                metrics.set_jobs_processing(0.0).await;
-
-                // Sequential job chaining: after completing one job, check if there are more jobs
-                // and start the next one, maintaining the FIFO order
-                {
-                    let mut state_guard = state.lock().await;
-                    if !state_guard.queue.is_empty() {
-                        let next_job = state_guard.queue.pop_front().unwrap();
-                        // Set processing flag to true for the next job
-                        state_guard.processing = true;
-                        drop(state_guard); // Release lock before sending
-
-                        // Record that a job is now processing
-                        metrics.set_jobs_processing(1.0).await;
-                        if let Err(e) = job_tx.send(next_job).await {
-                            error!("Failed to send next job to processor: {}", e);
-                            // Reset processing flag if we failed to send the job
-                            let mut state_guard = state.lock().await;
-                            state_guard.processing = false;
-
-                            // Reset jobs processing metric
-                            metrics.set_jobs_processing(0.0).await;
+                            warn!("Failed to record processing count: {}", e);
                         }
                     }
                 }
+
+                // Spawn a task for this job (enables concurrency when configured)
+                let job_clone = job.clone();
+                let state_clone = state.clone();
+                let config_clone = config.clone();
+                let job_tx_clone = job_tx.clone();
+                let metrics_clone = metrics.clone();
+
+                tokio::spawn(async move {
+                    // Process the job
+                    let result = Self::process_transcription(
+                        job_clone,
+                        &config_clone,
+                        state_clone.clone(),
+                        &metrics_clone,
+                    )
+                    .await;
+
+                    // Update job status based on result
+                    {
+                        let mut state_guard = state_clone.lock().await;
+                        match &result {
+                            Ok(result) => {
+                                info!("Job {} completed successfully", job_id);
+                                state_guard
+                                    .statuses
+                                    .insert(job_id.clone(), JobStatus::Completed);
+                                state_guard.results.insert(job_id.clone(), result.clone());
+                            }
+                            Err(e) => {
+                                error!("Job {} failed: {}", job_id, e);
+                                state_guard
+                                    .statuses
+                                    .insert(job_id.clone(), JobStatus::Failed(e.to_string()));
+                            }
+                        }
+
+                        // Update processing count and remove from processing set
+                        state_guard.processing_count -= 1;
+                        state_guard.processing_jobs.remove(&job_id);
+
+                        // Check for more jobs if we haven't hit our concurrency limit
+                        Self::check_and_start_next_jobs(
+                            &mut state_guard,
+                            &job_tx_clone,
+                            enable_concurrency,
+                            max_concurrent_jobs,
+                        )
+                        .await;
+
+                        // Update processing count metrics
+                        match validation::validate_usize_conversion(state_guard.processing_count) {
+                            Ok(safe_count) => {
+                                let metrics_clone = metrics_clone.clone();
+                                tokio::spawn(async move {
+                                    metrics_clone.set_jobs_processing(safe_count).await;
+                                });
+                            }
+                            Err(e) => {
+                                warn!("Failed to record processing count: {}", e);
+                            }
+                        }
+                    }
+                });
             }
 
             info!("Job processor stopped");
         });
     }
 
-    /// Check if there are jobs waiting and start the next one if not currently processing
-    /// This is the job starting logic that enforces sequential processing
-    async fn check_and_start_next_job(&self) -> Result<(), QueueError> {
-        // Check if we have jobs waiting and we're not currently processing one
-        // The critical part is checking !state_guard.processing which ensures
-        // we never start a new job if one is already running
-        let next_job = {
-            let mut state_guard = self.state.lock().await;
-            if !state_guard.processing && !state_guard.queue.is_empty() {
-                // Set flag BEFORE starting job to prevent concurrent starts
-                state_guard.processing = true;
-                state_guard.queue.pop_front()
+    /// Check for waiting jobs and start them if capacity allows
+    async fn check_and_start_next_jobs(
+        state_guard: &mut QueueState,
+        job_tx: &mpsc::Sender<TranscriptionJob>,
+        enable_concurrency: bool,
+        max_concurrent_jobs: usize,
+    ) {
+        let available_slots = if enable_concurrency {
+            // In concurrent mode, check if we have capacity for more jobs
+            max_concurrent_jobs.saturating_sub(state_guard.processing_count)
+        } else {
+            // In sequential mode, only start a new job if nothing is processing
+            if state_guard.processing_count == 0 {
+                1
             } else {
-                None
+                0
             }
-        }; // If we have a job to process, send it to the processor
-        if let Some(job) = next_job {
-            debug!("Starting next job: {}", job.id);
+        };
 
-            // Record that a job is now processing
-            self.metrics.set_jobs_processing(1.0).await;
-            if let Err(e) = self.job_tx.send(job).await {
-                error!("Failed to send job to processor: {}", e);
+        // Start as many jobs as we have slots for
+        for _ in 0..available_slots {
+            if let Some(next_job) = state_guard.queue.pop_front() {
+                // Update processing count and set
+                let job_id = next_job.id.clone();
+                state_guard.processing_count += 1;
+                state_guard.processing_jobs.insert(job_id.clone());
+                state_guard.statuses.insert(job_id, JobStatus::Processing);
 
-                // Reset processing flag if we failed to send the job
-                let mut state_guard = self.state.lock().await;
-                state_guard.processing = false;
+                // Clone the job before releasing lock
+                let job_to_send = next_job.clone();
 
-                // Reset jobs processing metric
-                self.metrics.set_jobs_processing(0.0).await;
-
-                return Err(QueueError::QueueError(format!("Failed to send job: {}", e)));
+                // Send job to processor
+                let job_tx_clone = job_tx.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = job_tx_clone.send(job_to_send).await {
+                        error!("Failed to send job to processor: {}", e);
+                    }
+                });
+            } else {
+                break; // No more jobs in queue
             }
         }
-
-        Ok(())
     }
+
     /// Process a transcription job by invoking WhisperX
     async fn process_transcription(
         job: TranscriptionJob,
@@ -391,114 +453,93 @@ impl QueueManager {
         metrics: &Metrics,
     ) -> Result<TranscriptionResult, QueueError> {
         let start_time = std::time::Instant::now();
+        let job_id = job.id.clone();
+
         debug!("Processing job {}", job.id);
 
-        // Record job processing start
-        metrics
-            .record_job_submitted(&job.model, &job.language)
-            .await;
+        // Determine output format
+        let output_format = job
+            .output_format
+            .as_deref()
+            .unwrap_or(&config.output_format);
 
-        // Validate output format if provided
-        // This determines the output file format (e.g., srt, vtt, txt, json)
-        let output_format = match &job.output_format {
-            Some(format) => {
-                WhisperConfig::validate_output_format(format.as_str())?;
-                format.as_str()
-            }
-            None => &config.output_format,
-        };
+        // Validate the output format
+        WhisperConfig::validate_output_format(output_format)?;
 
-        // Execute whisper command
-        let mut command = Command::new(&config.command_path);
-
-        command
-            .arg(&job.audio_file)
-            .arg("--model")
-            .arg(&job.model)
-            .arg("--model_dir")
-            .arg(format!("{}/{}", config.models_dir, job.model))
+        // Build WhisperX command
+        let mut cmd = Command::new(&config.command_path);
+        cmd.arg(&job.audio_file)
             .arg("--language")
             .arg(&job.language)
+            .arg("--model")
+            .arg(&job.model)
             .arg("--output_dir")
             .arg(&config.output_dir)
             .arg("--output_format")
             .arg(output_format);
 
-        // Add diarization if requested
+        // Add diarization if token is provided
         if job.diarize {
-            command.arg("--diarize");
-
-            // Add HF token if available for diarization models
             if let Some(token) = &job.hf_token {
-                if !token.is_empty() {
-                    command.arg("--hf_token").arg(token);
-                }
+                cmd.arg("--diarize").arg("--hf_token").arg(token);
             }
         }
 
         // Add initial prompt if provided
         if !job.prompt.is_empty() {
-            command.arg("--initial_prompt").arg(&job.prompt);
+            cmd.arg("--initial_prompt").arg(&job.prompt);
         }
 
-        // WhisperX will name the output file based on the input audio filename
-        // For example, if input is "recording.wav", output will be "recording.srt"
-        let audio_file_name = Path::new(&job.audio_file)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("audio");
-        let output_filename = format!("{}.{}", audio_file_name, output_format);
-        let output_file_path = Path::new(&config.output_dir).join(&output_filename);
+        debug!("Executing WhisperX command: {:?}", cmd);
 
-        // Store the output file path in the job metadata for later cleanup
-        // This will be retrieved and used during cleanup to remove the output file
-        let output_file_path_clone = output_file_path.clone();
-        let output = command.output().map_err(|e| {
-            let duration = start_time.elapsed().as_secs_f64();
-            // We need to use blocking call here since we're in a sync error context
-            tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(async {
-                    metrics
-                        .record_job_completed(&job.model, &job.language, duration, "failed")
-                        .await;
-                })
-            });
-            QueueError::TranscriptionError(format!("Failed to run command: {}", e))
+        // Execute WhisperX command
+        let output = cmd.output().map_err(|e| {
+            QueueError::TranscriptionError(format!("Failed to execute WhisperX command: {}", e))
         })?;
 
         if !output.status.success() {
-            let error = String::from_utf8_lossy(&output.stderr).to_string();
-            let duration = start_time.elapsed().as_secs_f64();
-            metrics
-                .record_job_completed(&job.model, &job.language, duration, "failed")
-                .await;
-            return Err(QueueError::TranscriptionError(error));
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(QueueError::TranscriptionError(format!(
+                "WhisperX command failed: {}",
+                stderr
+            )));
         }
 
-        // Read the result from the output file
-        let file_content = fs::read_to_string(&output_file_path).map_err(|e| {
-            QueueError::TranscriptionError(format!("Failed to read output file: {}", e))
-        })?;
+        // Determine the expected output file path
+        let audio_filename = job
+            .audio_file
+            .file_stem()
+            .ok_or_else(|| QueueError::TranscriptionError("Invalid audio file name".to_string()))?;
 
-        // Copy the transcription result to the job's folder for convenience and persistence
-        // This ensures the result is available even if the main output directory is cleaned
-        // The copied file is named "transcript.{format}" regardless of the input filename
-        let job_result_path = job
-            .folder_path
-            .join(format!("transcript.{}", output_format));
-        fs::write(&job_result_path, &file_content).map_err(|e| QueueError::IoError(e))?;
+        let output_file_name = format!("{}.{}", audio_filename.to_string_lossy(), output_format);
+        let output_file_path = Path::new(&config.output_dir).join(&output_file_name);
 
-        // Update job metadata with output file path for later cleanup
+        // Update job metadata with output file path
         {
             let mut state_guard = state.lock().await;
-            if let Some(metadata) = state_guard.job_metadata.get_mut(&job.id) {
-                metadata.output_file_path = Some(output_file_path_clone);
+            if let Some(metadata) = state_guard.job_metadata.get_mut(&job_id) {
+                metadata.output_file_path = Some(output_file_path.clone());
             }
-        } // Create result with the file content as-is
+        }
+
+        // Read the output file
+        let file_content = fs::read_to_string(&output_file_path).map_err(|e| {
+            QueueError::TranscriptionError(format!(
+                "Failed to read output file {}: {}",
+                output_file_path.display(),
+                e
+            ))
+        })?;
+
+        // Create a result file in the job folder for immediate access
+        let job_result_path = job.folder_path.join("result.txt");
+        fs::write(&job_result_path, &file_content).map_err(|e| QueueError::IoError(e))?;
+
+        // Create result with the file content as-is
         let result = TranscriptionResult {
             text: file_content,
             language: job.language.clone(),
-            segments: Vec::new(),
+            segments: Vec::new(), // TODO: Parse segments from output if needed
         };
 
         // Record metrics for job completion
@@ -512,46 +553,40 @@ impl QueueManager {
 
     /// Start a background task to periodically clean up old jobs
     fn start_cleanup_task(queue_manager: Arc<Mutex<Self>>) {
-        // Get cleanup interval from environment variable or use default
-        let cleanup_interval_hours = std::env::var(ENV_CLEANUP_INTERVAL_HOURS)
-            .ok()
-            .and_then(|val| val.parse::<u64>().ok())
-            .unwrap_or(DEFAULT_CLEANUP_INTERVAL_HOURS);
-        let cleanup_interval = Duration::from_secs(cleanup_interval_hours * 3600);
-
-        // Get retention period from environment variable or use default
-        let job_retention_hours = std::env::var(ENV_JOB_RETENTION_HOURS)
-            .ok()
-            .and_then(|val| val.parse::<u64>().ok())
-            .unwrap_or(DEFAULT_JOB_RETENTION_HOURS);
-        let max_age = Duration::from_secs(job_retention_hours * 3600);
-
-        info!(
-            "Starting cleanup task: retention period {} hours, interval {} hours",
-            job_retention_hours, cleanup_interval_hours
-        );
-
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(cleanup_interval);
+            let cleanup_interval = Duration::from_secs(
+                std::env::var(ENV_CLEANUP_INTERVAL_HOURS)
+                    .ok()
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(DEFAULT_CLEANUP_INTERVAL_HOURS)
+                    * 3600,
+            );
 
+            let max_age = Duration::from_secs(
+                std::env::var(ENV_JOB_RETENTION_HOURS)
+                    .ok()
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(DEFAULT_JOB_RETENTION_HOURS)
+                    * 3600,
+            );
+
+            info!(
+                "Starting cleanup task with interval: {:?}, max age: {:?}",
+                cleanup_interval, max_age
+            );
+            let mut interval = tokio::time::interval(cleanup_interval);
             loop {
                 interval.tick().await;
-                info!("Running scheduled cleanup of old jobs");
 
-                // Get a copy of the QueueManager
-                let queue_manager = queue_manager.lock().await;
-
-                // Find and clean up old jobs
-                match queue_manager.cleanup_old_jobs(max_age).await {
+                let manager = queue_manager.lock().await;
+                match manager.cleanup_old_jobs(max_age).await {
                     Ok(count) => {
                         if count > 0 {
-                            info!("Cleaned up {} expired jobs", count);
-                        } else {
-                            debug!("No expired jobs to clean up");
+                            info!("Cleaned up {} old jobs", count);
                         }
                     }
                     Err(e) => {
-                        error!("Error during scheduled cleanup: {}", e);
+                        error!("Failed to clean up old jobs: {}", e);
                     }
                 }
             }
@@ -561,70 +596,58 @@ impl QueueManager {
     /// Clean up jobs older than the specified duration
     async fn cleanup_old_jobs(&self, max_age: Duration) -> Result<usize, QueueError> {
         let now = SystemTime::now();
-        let mut cleanup_count = 0;
+        let mut cleaned_count = 0;
+        let mut jobs_to_clean = Vec::new();
 
-        // Collect job IDs to clean up
-        let job_ids_to_clean: Vec<String> = {
+        // Identify jobs to clean up
+        {
             let state = self.state.lock().await;
-            state
-                .job_metadata
-                .iter()
-                .filter_map(
-                    |(job_id, metadata)| match now.duration_since(metadata.created_at) {
-                        Ok(age) if age > max_age => Some(job_id.clone()),
-                        _ => None,
-                    },
-                )
-                .collect()
-        };
-
-        // Clean up each expired job
-        for job_id in job_ids_to_clean {
-            match self.cleanup_job(&job_id).await {
-                Ok(_) => {
-                    info!("Cleaned up expired job: {}", job_id);
-                    cleanup_count += 1;
-                }
-                Err(e) => {
-                    warn!("Failed to clean up expired job {}: {}", job_id, e);
+            for (job_id, metadata) in &state.job_metadata {
+                if let Ok(age) = now.duration_since(metadata.created_at) {
+                    if age > max_age {
+                        // Only clean up completed or failed jobs
+                        if let Some(status) = state.statuses.get(job_id) {
+                            if matches!(status, JobStatus::Completed | JobStatus::Failed(_)) {
+                                jobs_to_clean.push(job_id.clone());
+                            }
+                        }
+                    }
                 }
             }
         }
 
-        Ok(cleanup_count)
+        // Clean up identified jobs
+        for job_id in jobs_to_clean {
+            if let Ok(()) = self.cleanup_job(&job_id).await {
+                cleaned_count += 1;
+            }
+        }
+
+        Ok(cleaned_count)
     }
     /// Add a job to the queue
     /// This is the entry point for new transcription requests
     pub async fn add_job(&self, job: TranscriptionJob) -> Result<(), QueueError> {
-        let job_id = job.id.clone(); // Record file size metrics
+        let job_id = job.id.clone();
+        let job_model = job.model.clone();
+        let job_language = job.language.clone();
 
+        // Validate audio file exists and get metadata
         if let Ok(metadata) = std::fs::metadata(&job.audio_file) {
-            let file_size = metadata.len() as usize; // Convert u64 to usize first
-
-            match validation::validate_usize_conversion(file_size) {
-                Ok(safe_size) => self.metrics.record_file_size(safe_size).await,
-                Err(e) => {
-                    warn!(
-                        "Failed to record file size for {}: {}",
-                        job.audio_file.display(),
-                        e
-                    );
-                    // Still record that we had a large file
-                    self.metrics
-                        .increment("large_file_size_errors_total", &[])
-                        .await;
-                }
-            }
+            info!(
+                "Adding job {} with audio file size: {} bytes",
+                job_id,
+                metadata.len()
+            );
         }
 
         // Validate output format if provided
         if let Some(format) = &job.output_format {
-            WhisperConfig::validate_output_format(format.as_str())?;
+            WhisperConfig::validate_output_format(format)?;
         }
 
         let queue_size = {
             // Acquire mutex lock to safely modify state
-            // This ensures thread-safe access to the job queue and other state
             let mut state = self.state.lock().await;
 
             // Save job metadata before adding to queue
@@ -637,15 +660,53 @@ impl QueueManager {
                 },
             );
 
-            // Add job to queue (FIFO order) and update status
-            // Jobs are always added to the back of the queue
-            state.queue.push_back(job.clone());
-            state.statuses.insert(job_id.clone(), JobStatus::Queued);
+            // Determine whether to queue or process immediately
+            let can_process_now = if self.enable_concurrency {
+                state.processing_count < self.max_concurrent_jobs
+            } else {
+                state.processing_count == 0
+            };
 
-            state.queue.len()
-        }; // Lock is automatically released when state goes out of scope        // Record metrics for job submission and queue size
+            if can_process_now {
+                // Start processing immediately
+                state.processing_count += 1;
+                state.processing_jobs.insert(job_id.clone());
+                state.statuses.insert(job_id.clone(), JobStatus::Processing);
+
+                // Clone job for sending after releasing lock
+                let job_to_send = job;
+                drop(state); // Release lock before async operation
+
+                // Send job to processor
+                if let Err(e) = self.job_tx.send(job_to_send).await {
+                    // Reset state if sending failed
+                    let mut state = self.state.lock().await;
+                    state.processing_count -= 1;
+                    state.processing_jobs.remove(&job_id);
+                    state.statuses.remove(&job_id);
+                    state.job_metadata.remove(&job_id);
+                    return Err(QueueError::QueueError(format!("Failed to send job: {}", e)));
+                }
+
+                0 // No jobs in queue since this one started immediately
+            } else {
+                // Add job to queue (FIFO order) and update status
+                state.queue.push_back(job);
+                state.statuses.insert(job_id.clone(), JobStatus::Queued);
+
+                info!(
+                    "Job {} added to queue (position: {})",
+                    job_id,
+                    state.queue.len()
+                );
+
+                state.queue.len()
+            }
+        }; // Lock is automatically released when state goes out of scope
+
+        // Record metrics for job submission and queue size
         self.metrics
-            .record_job_submitted(&job.model, &job.language)
+            .record_job_submitted(&job_model, &job_language)
             .await;
 
         // Use safe conversion for queue size
@@ -653,21 +714,10 @@ impl QueueManager {
             Ok(safe_size) => self.metrics.set_queue_size(safe_size).await,
             Err(e) => {
                 warn!("Failed to record queue size {}: {}", queue_size, e);
-                // Record the error but continue operation
-                self.metrics
-                    .increment("queue_size_conversion_errors_total", &[])
-                    .await;
             }
         }
 
-        // Check if we need to start processing
-        // This will only start a job if nothing is currently processing
-        // which enforces the sequential processing requirement
-        if let Err(e) = self.check_and_start_next_job().await {
-            error!("Failed to start next job: {}", e);
-        }
-
-        info!("Job {} added to queue", job_id);
+        info!("Job {} registered", job_id);
         Ok(())
     }
 
@@ -702,7 +752,21 @@ impl QueueManager {
         for (position, job) in state.queue.iter().enumerate() {
             if job.id == job_id {
                 // Add 1 to make it 1-based instead of 0-based
-                return Ok(Some(position + 1));
+                let position = position + 1;
+
+                // With concurrency enabled, we need to adjust the queue position
+                // to account for how many jobs might start simultaneously
+                if self.enable_concurrency && self.max_concurrent_jobs > 1 {
+                    let adjusted_position =
+                        (position + self.max_concurrent_jobs - 1) / self.max_concurrent_jobs;
+                    info!(
+                        "Job {} is at queue position {} (batch {})",
+                        job_id, position, adjusted_position
+                    );
+                    return Ok(Some(adjusted_position));
+                }
+
+                return Ok(Some(position));
             }
         }
 
@@ -734,7 +798,14 @@ impl QueueManager {
 
         // Check if job exists
         if let Some(status) = state.statuses.get(job_id) {
-            // Only allow cancellation of queued jobs, not processing or completed jobs
+            // Check if job is currently processing
+            if state.processing_jobs.contains(job_id) {
+                return Err(QueueError::CannotCancelJob(
+                    "Cannot cancel a job that is currently processing".to_string(),
+                ));
+            }
+
+            // Handle based on job status
             match status {
                 JobStatus::Queued => {
                     // Get job details for metrics before removal
@@ -776,9 +847,13 @@ impl QueueManager {
                     info!("Canceled job: {}", job_id);
                     Ok(())
                 }
-                JobStatus::Processing => Err(QueueError::CannotCancelJob(
-                    "Cannot cancel a job that is currently processing".to_string(),
-                )),
+                JobStatus::Processing => {
+                    // This shouldn't happen as we checked processing_jobs already
+                    // but handle it for safety
+                    Err(QueueError::CannotCancelJob(
+                        "Cannot cancel a job that is currently processing".to_string(),
+                    ))
+                }
                 JobStatus::Completed | JobStatus::Failed(_) => {
                     // For completed/failed jobs, we'll just clean them up
                     drop(state); // Release lock before calling another method

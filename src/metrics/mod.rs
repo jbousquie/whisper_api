@@ -8,3 +8,5 @@ pub mod metrics;
 pub mod null;
 pub mod prometheus;
 pub mod statsd;
+
+//pub mod test_statsd;

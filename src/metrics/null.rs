@@ -1,8 +1,8 @@
+use crate::metrics::error::MetricsError;
 /// Null exporter for testing or when metrics are disabled
 /// This exporter does not collect or export any metrics, effectively acting as a no-op.
 ///
 use crate::metrics::metrics::MetricsExporter;
-use crate::metrics::error::MetricsError;
 use async_trait::async_trait;
 pub struct NullExporter;
 
@@ -12,11 +12,21 @@ impl MetricsExporter for NullExporter {
         // NOP
         Ok(())
     }
-    async fn set_gauge(&self, _name: &str, _value: f64, _labels: &[(&str, &str)]) -> Result<(), MetricsError> {
+    async fn set_gauge(
+        &self,
+        _name: &str,
+        _value: f64,
+        _labels: &[(&str, &str)],
+    ) -> Result<(), MetricsError> {
         // No-op
         Ok(())
     }
-    async fn observe_histogram(&self, _name: &str, _value: f64, _labels: &[(&str, &str)]) -> Result<(), MetricsError> {
+    async fn observe_histogram(
+        &self,
+        _name: &str,
+        _value: f64,
+        _labels: &[(&str, &str)],
+    ) -> Result<(), MetricsError> {
         // No-op
         Ok(())
     }

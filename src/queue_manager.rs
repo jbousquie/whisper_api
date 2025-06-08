@@ -4,6 +4,7 @@
 //! requests asynchronously. It processes one job at a time to ensure WhisperX can use all available
 //! physical resources for each transcription job.
 
+use crate::metrics::error::validation;
 use crate::metrics::metrics::Metrics;
 use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
@@ -595,11 +596,25 @@ impl QueueManager {
     /// Add a job to the queue
     /// This is the entry point for new transcription requests
     pub async fn add_job(&self, job: TranscriptionJob) -> Result<(), QueueError> {
-        let job_id = job.id.clone();
+        let job_id = job.id.clone(); // Record file size metrics
 
-        // Record file size metrics
         if let Ok(metadata) = std::fs::metadata(&job.audio_file) {
-            self.metrics.record_file_size(metadata.len() as f64).await;
+            let file_size = metadata.len() as usize; // Convert u64 to usize first
+
+            match validation::validate_usize_conversion(file_size) {
+                Ok(safe_size) => self.metrics.record_file_size(safe_size).await,
+                Err(e) => {
+                    warn!(
+                        "Failed to record file size for {}: {}",
+                        job.audio_file.display(),
+                        e
+                    );
+                    // Still record that we had a large file
+                    self.metrics
+                        .increment("large_file_size_errors_total", &[])
+                        .await;
+                }
+            }
         }
 
         // Validate output format if provided
@@ -628,13 +643,22 @@ impl QueueManager {
             state.statuses.insert(job_id.clone(), JobStatus::Queued);
 
             state.queue.len()
-        }; // Lock is automatically released when state goes out of scope
-
-        // Record metrics for job submission and queue size
+        }; // Lock is automatically released when state goes out of scope        // Record metrics for job submission and queue size
         self.metrics
             .record_job_submitted(&job.model, &job.language)
             .await;
-        self.metrics.set_queue_size(queue_size as f64).await;
+
+        // Use safe conversion for queue size
+        match validation::validate_usize_conversion(queue_size) {
+            Ok(safe_size) => self.metrics.set_queue_size(safe_size).await,
+            Err(e) => {
+                warn!("Failed to record queue size {}: {}", queue_size, e);
+                // Record the error but continue operation
+                self.metrics
+                    .increment("queue_size_conversion_errors_total", &[])
+                    .await;
+            }
+        }
 
         // Check if we need to start processing
         // This will only start a job if nothing is currently processing

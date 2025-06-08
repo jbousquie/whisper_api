@@ -1,9 +1,9 @@
+use crate::metrics::error::{validation, MetricsError};
 /// Prometheus metrics exporter implementation
 ///
 /// It allows for the collection and export of metrics in a format compatible with Prometheus.
 ///
 use crate::metrics::metrics::MetricsExporter;
-use crate::metrics::error::{MetricsError, validation};
 use async_trait::async_trait;
 use log::debug;
 use prometheus::{
@@ -18,6 +18,8 @@ pub struct PrometheusExporter {
     counters: Mutex<HashMap<String, CounterVec>>,
     gauges: Mutex<HashMap<String, GaugeVec>>,
     histograms: Mutex<HashMap<String, HistogramVec>>,
+    /// Maximum number of metrics to prevent memory issues
+    max_metrics: usize,
 }
 
 impl PrometheusExporter {
@@ -28,8 +30,32 @@ impl PrometheusExporter {
             counters: Mutex::new(HashMap::new()),
             gauges: Mutex::new(HashMap::new()),
             histograms: Mutex::new(HashMap::new()),
+            max_metrics: 1000, // Default limit
         }
-    }    async fn get_or_create_counter(
+    }
+    /// Create a new PrometheusExporter with custom max metrics limit
+    #[allow(dead_code)] // May be used in configuration scenarios
+    pub fn with_max_metrics(max_metrics: usize) -> Self {
+        let registry = Registry::new();
+        Self {
+            registry,
+            counters: Mutex::new(HashMap::new()),
+            gauges: Mutex::new(HashMap::new()),
+            histograms: Mutex::new(HashMap::new()),
+            max_metrics,
+        }
+    }
+
+    fn check_resource_limits(&self, current_count: usize) -> Result<(), MetricsError> {
+        if current_count >= self.max_metrics {
+            return Err(MetricsError::resource_limit_exceeded(format!(
+                "Maximum number of metrics ({}) exceeded",
+                self.max_metrics
+            )));
+        }
+        Ok(())
+    }
+    async fn get_or_create_counter(
         &self,
         name: &str,
         help: &str,
@@ -40,31 +66,55 @@ impl PrometheusExporter {
             return Ok(counter.clone());
         }
 
-        let opts = Opts::new(name, help);
-        let counter = CounterVec::new(opts, label_names)
-            .map_err(|e| MetricsError::registration_failed(name, format!("Failed to create counter: {}", e)))?;
+        // Check resource limits before creating new metric
+        self.check_resource_limits(counters.len())?;
 
-        self.registry.register(Box::new(counter.clone()))
-            .map_err(|e| MetricsError::registration_failed(name, format!("Failed to register counter: {}", e)))?;
+        let opts = Opts::new(name, help);
+        let counter = CounterVec::new(opts, label_names).map_err(|e| {
+            MetricsError::registration_failed(name, format!("Failed to create counter: {}", e))
+        })?;
+
+        self.registry
+            .register(Box::new(counter.clone()))
+            .map_err(|e| {
+                MetricsError::registration_failed(
+                    name,
+                    format!("Failed to register counter: {}", e),
+                )
+            })?;
 
         counters.insert(name.to_string(), counter.clone());
         Ok(counter)
-    }    async fn get_or_create_gauge(&self, name: &str, help: &str, label_names: &[&str]) -> Result<GaugeVec, MetricsError> {
+    }
+    async fn get_or_create_gauge(
+        &self,
+        name: &str,
+        help: &str,
+        label_names: &[&str],
+    ) -> Result<GaugeVec, MetricsError> {
         let mut gauges = self.gauges.lock().await;
         if let Some(gauge) = gauges.get(name) {
             return Ok(gauge.clone());
         }
 
-        let opts = Opts::new(name, help);
-        let gauge = GaugeVec::new(opts, label_names)
-            .map_err(|e| MetricsError::registration_failed(name, format!("Failed to create gauge: {}", e)))?;
+        // Check resource limits before creating new metric
+        self.check_resource_limits(gauges.len())?;
 
-        self.registry.register(Box::new(gauge.clone()))
-            .map_err(|e| MetricsError::registration_failed(name, format!("Failed to register gauge: {}", e)))?;
+        let opts = Opts::new(name, help);
+        let gauge = GaugeVec::new(opts, label_names).map_err(|e| {
+            MetricsError::registration_failed(name, format!("Failed to create gauge: {}", e))
+        })?;
+
+        self.registry
+            .register(Box::new(gauge.clone()))
+            .map_err(|e| {
+                MetricsError::registration_failed(name, format!("Failed to register gauge: {}", e))
+            })?;
 
         gauges.insert(name.to_string(), gauge.clone());
         Ok(gauge)
-    }    async fn get_or_create_histogram(
+    }
+    async fn get_or_create_histogram(
         &self,
         name: &str,
         help: &str,
@@ -75,12 +125,22 @@ impl PrometheusExporter {
             return Ok(histogram.clone());
         }
 
-        let opts = HistogramOpts::new(name, help);
-        let histogram = HistogramVec::new(opts, label_names)
-            .map_err(|e| MetricsError::registration_failed(name, format!("Failed to create histogram: {}", e)))?;
+        // Check resource limits before creating new metric
+        self.check_resource_limits(histograms.len())?;
 
-        self.registry.register(Box::new(histogram.clone()))
-            .map_err(|e| MetricsError::registration_failed(name, format!("Failed to register histogram: {}", e)))?;
+        let opts = HistogramOpts::new(name, help);
+        let histogram = HistogramVec::new(opts, label_names).map_err(|e| {
+            MetricsError::registration_failed(name, format!("Failed to create histogram: {}", e))
+        })?;
+
+        self.registry
+            .register(Box::new(histogram.clone()))
+            .map_err(|e| {
+                MetricsError::registration_failed(
+                    name,
+                    format!("Failed to register histogram: {}", e),
+                )
+            })?;
 
         histograms.insert(name.to_string(), histogram.clone());
         Ok(histogram)
@@ -96,7 +156,8 @@ impl PrometheusExporter {
 }
 
 #[async_trait]
-impl MetricsExporter for PrometheusExporter {    async fn increment(&self, name: &str, labels: &[(&str, &str)]) -> Result<(), MetricsError> {
+impl MetricsExporter for PrometheusExporter {
+    async fn increment(&self, name: &str, labels: &[(&str, &str)]) -> Result<(), MetricsError> {
         // Validate inputs first
         validation::validate_metric_name(name)?;
         validation::validate_labels(labels)?;
@@ -106,7 +167,7 @@ impl MetricsExporter for PrometheusExporter {    async fn increment(&self, name:
             .get_or_create_counter(name, "Counter metric", &label_names)
             .await?;
 
-        // Safely handle label values with proper error handling
+        // Handle label values with proper error handling
         let metric = if label_names.is_empty() {
             counter.with_label_values(&[] as &[&str])
         } else {
@@ -116,7 +177,13 @@ impl MetricsExporter for PrometheusExporter {    async fn increment(&self, name:
         metric.inc();
         debug!("Incremented counter {} with labels {:?}", name, labels);
         Ok(())
-    }    async fn set_gauge(&self, name: &str, value: f64, labels: &[(&str, &str)]) -> Result<(), MetricsError> {
+    }
+    async fn set_gauge(
+        &self,
+        name: &str,
+        value: f64,
+        labels: &[(&str, &str)],
+    ) -> Result<(), MetricsError> {
         // Validate inputs first
         validation::validate_metric_name(name)?;
         validation::validate_labels(labels)?;
@@ -127,7 +194,7 @@ impl MetricsExporter for PrometheusExporter {    async fn increment(&self, name:
             .get_or_create_gauge(name, "Gauge metric", &label_names)
             .await?;
 
-        // Safely handle label values with proper error handling
+        // Handle label values with proper error handling
         let metric = if label_names.is_empty() {
             gauge.with_label_values(&[] as &[&str])
         } else {
@@ -137,7 +204,14 @@ impl MetricsExporter for PrometheusExporter {    async fn increment(&self, name:
         metric.set(value);
         debug!("Set gauge {} to {} with labels {:?}", name, value, labels);
         Ok(())
-    }    async fn observe_histogram(&self, name: &str, value: f64, labels: &[(&str, &str)]) -> Result<(), MetricsError> {
+    }
+
+    async fn observe_histogram(
+        &self,
+        name: &str,
+        value: f64,
+        labels: &[(&str, &str)],
+    ) -> Result<(), MetricsError> {
         // Validate inputs first
         validation::validate_metric_name(name)?;
         validation::validate_labels(labels)?;
@@ -148,7 +222,7 @@ impl MetricsExporter for PrometheusExporter {    async fn increment(&self, name:
             .get_or_create_histogram(name, "Histogram metric", &label_names)
             .await?;
 
-        // Safely handle label values with proper error handling
+        // Handle label values with proper error handling
         let metric = if label_names.is_empty() {
             histogram.with_label_values(&[] as &[&str])
         } else {
@@ -162,13 +236,14 @@ impl MetricsExporter for PrometheusExporter {    async fn increment(&self, name:
         );
         Ok(())
     }
+
     async fn export(&self) -> Result<Vec<u8>, MetricsError> {
-        let mut buffer = vec![];
         let encoder = TextEncoder::new();
         let metric_families = self.registry.gather();
+        let mut buffer = Vec::new();
         encoder
             .encode(&metric_families, &mut buffer)
-            .map_err(|e| MetricsError::invalid_name("export", format!("Failed to encode metrics: {}", e)))?;
+            .map_err(|e| MetricsError::export_failed(format!("Failed to encode metrics: {}", e)))?;
         Ok(buffer)
     }
 }

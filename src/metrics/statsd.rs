@@ -9,9 +9,9 @@
 /// - Gauges: `metric_name:value|g[|#tag1:value1,tag2:value2]`
 /// - Timers/Histograms: `metric_name:value|ms[|@sample_rate][|#tag1:value1,tag2:value2]`
 use crate::metrics::metrics::MetricsExporter;
-use crate::metrics::error::MetricsError;
+use crate::metrics::error::{MetricsError, validation};
 use async_trait::async_trait;
-use log::{debug, error};
+use log::debug;
 use std::net::SocketAddr;
 use tokio::net::UdpSocket;
 
@@ -32,16 +32,17 @@ impl StatsDExporter {
     /// * `endpoint` - StatsD server endpoint in format "host:port"
     /// * `prefix` - Optional prefix for all metric names
     /// * `sample_rate` - Sample rate for metrics (default: 1.0)
-    ///
-    /// # Example
+    ///    /// # Example
     /// ```
-    /// let exporter = StatsDExporter::new("127.0.0.1:8125".to_string(), Some("whisper_api".to_string()), Some(1.0))?;
+    /// use whisper_api::metrics::statsd::StatsDExporter;
+    /// let exporter = StatsDExporter::new("127.0.0.1:8125".to_string(), Some("whisper_api".to_string()), Some(1.0));
+    /// assert!(exporter.is_ok());
     /// ```
     pub fn new(
         endpoint: String,
         prefix: Option<String>,
         sample_rate: Option<f64>,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, MetricsError> {
         // Handle hostname resolution for localhost and other hostnames
         let address = if endpoint.starts_with("localhost:") {
             // Replace localhost with 127.0.0.1
@@ -52,11 +53,11 @@ impl StatsDExporter {
 
         let address = address
             .parse::<SocketAddr>()
-            .map_err(|e| format!("Invalid StatsD endpoint '{}': {}", endpoint, e))?;
+            .map_err(|e| MetricsError::configuration_error(format!("Invalid StatsD endpoint '{}': {}", endpoint, e)))?;
 
         let sample_rate = sample_rate.unwrap_or(1.0);
         if !(0.0..=1.0).contains(&sample_rate) {
-            return Err("Sample rate must be between 0.0 and 1.0".to_string());
+            return Err(MetricsError::configuration_error("Sample rate must be between 0.0 and 1.0"));
         }
 
         Ok(Self {
@@ -95,56 +96,61 @@ impl StatsDExporter {
         } else {
             String::new()
         }
-    }
-
-    /// Send a StatsD message via UDP
-    async fn send_metric(&self, message: &str) {
+    }    /// Send a StatsD message via UDP
+    async fn send_metric(&self, message: &str) -> Result<(), MetricsError> {
         // Skip sending if sampling and random check fails
         if self.sample_rate < 1.0 && fastrand::f64() > self.sample_rate {
-            return;
+            return Ok(());
         }
 
-        match UdpSocket::bind("0.0.0.0:0").await {
-            Ok(socket) => {
-                if let Err(e) = socket.send_to(message.as_bytes(), &self.address).await {
-                    error!("Failed to send StatsD metric: {}", e);
-                }
-            }
-            Err(e) => {
-                error!("Failed to create UDP socket for StatsD: {}", e);
-            }
-        }
+        let socket = UdpSocket::bind("0.0.0.0:0").await
+            .map_err(|e| MetricsError::network_error(format!("Failed to create UDP socket for StatsD: {}", e)))?;
+        
+        socket.send_to(message.as_bytes(), &self.address).await
+            .map_err(|e| MetricsError::network_error(format!("Failed to send StatsD metric: {}", e)))?;
 
         debug!("Sent StatsD metric: {}", message);
+        Ok(())
     }
 }
 
 #[async_trait]
-impl MetricsExporter for StatsDExporter {
-    /// Increment a counter metric
+impl MetricsExporter for StatsDExporter {    /// Increment a counter metric
     /// Format: metric_name:1|c[|@sample_rate][|#tags]
     async fn increment(&self, name: &str, labels: &[(&str, &str)]) -> Result<(), MetricsError> {
+        // Validate inputs first
+        validation::validate_metric_name(name)?;
+        validation::validate_labels(labels)?;
+
         let metric_name = self.format_metric_name(name);
         let tags = self.format_tags(labels);
         let sample_rate = self.format_sample_rate();
 
         let message = format!("{}:1|c{}{}", metric_name, sample_rate, tags);
-        self.send_metric(&message).await;
+        self.send_metric(&message).await?;
         Ok(())
-    }
-    /// Set a gauge metric value
+    }    /// Set a gauge metric value
     /// Format: metric_name:value|g[|#tags]
     async fn set_gauge(&self, name: &str, value: f64, labels: &[(&str, &str)]) -> Result<(), MetricsError> {
+        // Validate inputs first
+        validation::validate_metric_name(name)?;
+        validation::validate_labels(labels)?;
+        validation::validate_numeric_value(value)?;
+
         let metric_name = self.format_metric_name(name);
         let tags = self.format_tags(labels);
 
         let message = format!("{}:{}|g{}", metric_name, value, tags);
-        self.send_metric(&message).await;
+        self.send_metric(&message).await?;
         Ok(())
-    }
-    /// Observe a value in a histogram/timer metric
+    }    /// Observe a value in a histogram/timer metric
     /// Format: metric_name:value|ms[|@sample_rate][|#tags]
     async fn observe_histogram(&self, name: &str, value: f64, labels: &[(&str, &str)]) -> Result<(), MetricsError> {
+        // Validate inputs first
+        validation::validate_metric_name(name)?;
+        validation::validate_labels(labels)?;
+        validation::validate_numeric_value(value)?;
+
         let metric_name = self.format_metric_name(name);
         let tags = self.format_tags(labels);
         let sample_rate = self.format_sample_rate();
@@ -153,7 +159,7 @@ impl MetricsExporter for StatsDExporter {
         let value_ms = if value < 100.0 { value * 1000.0 } else { value };
 
         let message = format!("{}:{}|ms{}{}", metric_name, value_ms, sample_rate, tags);
-        self.send_metric(&message).await;
+        self.send_metric(&message).await?;
         Ok(())
     }
     /// Export metrics - StatsD doesn't support pull-based exports

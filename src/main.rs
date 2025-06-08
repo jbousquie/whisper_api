@@ -53,7 +53,7 @@ async fn main() -> std::io::Result<()> {
         metrics_config.endpoint.as_deref(),
         metrics_config.prefix.as_deref(),
         metrics_config.sample_rate,
-    );
+    ).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
     let metrics = Metrics::new(metrics_exporter);
 
     // Create tmp directory if it doesn't exist

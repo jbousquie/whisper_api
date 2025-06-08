@@ -40,9 +40,9 @@ pub enum MetricsError {
     /// Resource limit exceeded (e.g., too many metrics, memory limit)
     #[error("Resource limit exceeded: {reason}")]
     ResourceLimitExceeded { reason: String },
-
     /// Internal system error (should be rare)
     #[error("Internal error: {reason}")]
+    #[allow(dead_code)] // Reserved for future use in panic handling
     InternalError { reason: String },
 }
 
@@ -106,9 +106,10 @@ impl MetricsError {
             reason: reason.into(),
         }
     }
-
     /// Create an internal error
-    pub fn internal_error<R: Into<String>>(reason: R) -> Self {
+    //#[allow(dead_code)]
+    // TODO : reserved for future use in panic handling
+    pub fn _internal_error<R: Into<String>>(reason: R) -> Self {
         Self::InternalError {
             reason: reason.into(),
         }
@@ -138,11 +139,17 @@ pub mod validation {
     /// - Not exceed reasonable length limits
     pub fn validate_metric_name(name: &str) -> Result<(), MetricsError> {
         if name.is_empty() {
-            return Err(MetricsError::invalid_name(name, "Metric name cannot be empty"));
+            return Err(MetricsError::invalid_name(
+                name,
+                "Metric name cannot be empty",
+            ));
         }
 
         if name.len() > 512 {
-            return Err(MetricsError::invalid_name(name, "Metric name too long (max 512 characters)"));
+            return Err(MetricsError::invalid_name(
+                name,
+                "Metric name too long (max 512 characters)",
+            ));
         }
 
         // Check first character
@@ -170,11 +177,17 @@ pub mod validation {
     /// Validate label key according to Prometheus rules
     pub fn validate_label_key(key: &str) -> Result<(), MetricsError> {
         if key.is_empty() {
-            return Err(MetricsError::invalid_label(key, "Label key cannot be empty"));
+            return Err(MetricsError::invalid_label(
+                key,
+                "Label key cannot be empty",
+            ));
         }
 
         if key.len() > 256 {
-            return Err(MetricsError::invalid_label(key, "Label key too long (max 256 characters)"));
+            return Err(MetricsError::invalid_label(
+                key,
+                "Label key too long (max 256 characters)",
+            ));
         }
 
         // Check for reserved labels
@@ -212,7 +225,10 @@ pub mod validation {
         if value.len() > MAX_LABEL_VALUE_LENGTH {
             return Err(MetricsError::invalid_label(
                 value,
-                format!("Label value too long (max {} characters)", MAX_LABEL_VALUE_LENGTH),
+                format!(
+                    "Label value too long (max {} characters)",
+                    MAX_LABEL_VALUE_LENGTH
+                ),
             ));
         }
 
@@ -249,10 +265,7 @@ pub mod validation {
 
             // Check for duplicate keys
             if !seen_keys.insert(key) {
-                return Err(MetricsError::invalid_label(
-                    *key,
-                    "Duplicate label key",
-                ));
+                return Err(MetricsError::invalid_label(*key, "Duplicate label key"));
             }
         }
 
@@ -294,7 +307,7 @@ pub mod validation {
 
 #[cfg(test)]
 mod tests {
-    
+
     use crate::metrics::error::validation::*;
 
     #[test]
@@ -347,7 +360,12 @@ mod tests {
 
         // Too many labels
         let many_labels: Vec<(&str, &str)> = (0..50)
-            .map(|i| (Box::leak(format!("key{}", i).into_boxed_str()) as &str, "value"))
+            .map(|i| {
+                (
+                    Box::leak(format!("key{}", i).into_boxed_str()) as &str,
+                    "value",
+                )
+            })
             .collect();
         assert!(validate_labels(&many_labels).is_err());
     }

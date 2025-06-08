@@ -3,7 +3,7 @@
 //! This module provides a pluggable metrics system that supports multiple monitoring
 //! backends including Prometheus, StatsD, and other monitoring systems.
 
-use crate::metrics::error::MetricsError;
+use crate::metrics::error::{MetricsError, validation};
 use crate::metrics::null::NullExporter;
 use crate::metrics::prometheus::PrometheusExporter;
 use crate::metrics::statsd::StatsDExporter;
@@ -67,16 +67,12 @@ impl Metrics {
         if let Err(e) = self.exporter.observe_histogram(name, value, labels).await {
             warn!("Failed to observe histogram metric '{}': {}", name, e);
         }
+    }    /// Export metrics in the format expected by the monitoring system
+    pub async fn export(&self) -> Result<Vec<u8>, MetricsError> {
+        self.exporter.export().await
     }
 
-    /// Export metrics in the format expected by the monitoring system
-    pub async fn export(&self) -> Result<Vec<u8>, String> {
-        self.exporter.export().await.map_err(|e| e.to_string())
-    }
-
-    // Convenience methods for common metrics
-
-    /// Record HTTP request duration
+    // Convenience methods for common metrics    /// Record HTTP request duration
     pub async fn record_http_request(
         &self,
         endpoint: &str,
@@ -104,9 +100,7 @@ impl Metrics {
             ],
         )
         .await;
-    }
-
-    /// Record job submission
+    }    /// Record job submission
     pub async fn record_job_submitted(&self, model: &str, language: &str) {
         self.increment(
             "jobs_submitted_total",
@@ -145,9 +139,7 @@ impl Metrics {
     /// Set number of jobs currently processing
     pub async fn set_jobs_processing(&self, count: f64) {
         self.set_gauge("jobs_processing", count, &[]).await;
-    }
-
-    /// Record authentication attempt
+    }    /// Record authentication attempt
     pub async fn record_auth_attempt(&self, status: &str) {
         self.increment("auth_attempts_total", &[("status", status)])
             .await;
@@ -170,11 +162,17 @@ impl Metrics {
     /// Record when a job starts processing
     pub async fn record_job_processing_start(&self) {
         self.increment("jobs_processing_started_total", &[]).await;
-    }
-
-    /// Record current queue size (alias for set_queue_size)
+    }    /// Record current queue size (alias for set_queue_size)
     pub async fn record_queue_size(&self, size: usize) {
-        self.set_queue_size(size as f64).await;
+        // Use safe conversion to avoid precision loss for large queue sizes
+        match validation::validate_usize_conversion(size) {
+            Ok(safe_size) => self.set_queue_size(safe_size).await,
+            Err(e) => {
+                warn!("Failed to record queue size {}: {}", size, e);
+                // Record the error but continue operation
+                self.increment("queue_size_conversion_errors_total", &[]).await;
+            }
+        }
     }
 }
 
@@ -184,11 +182,11 @@ pub fn create_metrics_exporter(
     endpoint: Option<&str>,
     prefix: Option<&str>,
     sample_rate: Option<f64>,
-) -> Arc<dyn MetricsExporter> {
+) -> Result<Arc<dyn MetricsExporter>, MetricsError> {
     match exporter_type.to_lowercase().as_str() {
         "prometheus" => {
             debug!("Initializing Prometheus metrics exporter");
-            Arc::new(PrometheusExporter::new())
+            Ok(Arc::new(PrometheusExporter::new()))
         }
         "statsd" => {
             let endpoint = endpoint.unwrap_or("localhost:8125");
@@ -196,31 +194,22 @@ pub fn create_metrics_exporter(
                 "Initializing StatsD metrics exporter with endpoint: {}, prefix: {:?}, sample_rate: {:?}",
                 endpoint, prefix, sample_rate
             );
-            match StatsDExporter::new(
+            let exporter = StatsDExporter::new(
                 endpoint.to_string(),
                 prefix.map(|s| s.to_string()),
                 sample_rate,
-            ) {
-                Ok(exporter) => Arc::new(exporter),
-                Err(e) => {
-                    warn!(
-                        "Failed to create StatsD exporter: {}, using null exporter",
-                        e
-                    );
-                    Arc::new(NullExporter)
-                }
-            }
+            )?;
+            Ok(Arc::new(exporter))
         }
         "none" | "disabled" => {
             debug!("Metrics disabled, using null exporter");
-            Arc::new(NullExporter)
+            Ok(Arc::new(NullExporter))
         }
         _ => {
-            warn!(
-                "Unknown metrics exporter type '{}', using null exporter",
+            Err(MetricsError::configuration_error(format!(
+                "Unknown metrics exporter type '{}'", 
                 exporter_type
-            );
-            Arc::new(NullExporter)
+            )))
         }
     }
 }

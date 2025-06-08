@@ -1,9 +1,10 @@
-use actix_web::{middleware::Logger, web, App, HttpResponse, HttpServer};
+use actix_web::{middleware::Logger, web, App, HttpServer};
 use env_logger::Env;
 use log::{info, warn};
 
 // Import our modules
 mod config;
+mod config_loader;
 mod error;
 mod file_utils;
 mod handlers;
@@ -15,6 +16,8 @@ use crate::metrics::metrics::{create_metrics_exporter, Metrics};
 use config::{HandlerConfig, MetricsConfig};
 
 // Import the types we need
+use config::HandlerConfig;
+
 use handlers::{
     cancel_transcription, transcribe, transcription_result, transcription_status, Authentication,
 };
@@ -41,6 +44,13 @@ async fn metrics_handler(metrics: web::Data<Metrics>) -> Result<HttpResponse, ac
 async fn main() -> std::io::Result<()> {
     // Initialize logger
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
+
+    // Load configuration from file and environment variables
+    if config_loader::load_config() {
+        info!("Configuration loaded from file");
+    } else {
+        info!("Using environment variables and defaults (no config file loaded)");
+    }
 
     // Load configurations
     let handler_config = HandlerConfig::default();

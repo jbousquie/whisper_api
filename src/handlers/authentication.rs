@@ -1,7 +1,7 @@
 // Authentication middleware for Whisper API
 //
 // This module provides authentication middleware for the Whisper API.
-// It verifies that incoming requests have a valid Authorization header.
+// It verifies that incoming requests have a valid Authorization header when enabled.
 
 use actix_web::{
     dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform},
@@ -10,7 +10,19 @@ use actix_web::{
     Error,
 };
 use futures::future::{ok, LocalBoxFuture, Ready};
-use log::{debug, warn};
+use log::{debug, info, warn};
+use std::env;
+
+/// Default setting for authorization requirement
+const DEFAULT_ENABLE_AUTHORIZATION: bool = true;
+
+/// Helper function to check if authorization is enabled
+fn is_authorization_enabled() -> bool {
+    env::var("ENABLE_AUTHORIZATION")
+        .ok()
+        .and_then(|val| val.parse::<bool>().ok())
+        .unwrap_or(DEFAULT_ENABLE_AUTHORIZATION)
+}
 
 /// Middleware factory for authentication
 pub struct Authentication;
@@ -28,6 +40,12 @@ where
     type Future = Ready<Result<Self::Transform, Self::InitError>>;
 
     fn new_transform(&self, service: S) -> Self::Future {
+        // Log authentication status at startup
+        let auth_enabled = is_authorization_enabled();
+        if !auth_enabled {
+            info!("Authentication requirement is disabled via configuration");
+        }
+        
         ok(AuthenticationMiddleware { service })
     }
 }
@@ -87,6 +105,12 @@ where
 
 /// Authenticate a request by checking the Authorization header
 fn authenticate(req: &ServiceRequest) -> Result<(), Error> {
+    // Check if authorization is enabled via configuration
+    if !is_authorization_enabled() {
+        debug!("Authorization is disabled, allowing request without authentication");
+        return Ok(());
+    }
+
     // Check if Authorization header exists
     if let Some(auth_header) = req.headers().get(header::AUTHORIZATION) {
         // Check if header can be converted to string

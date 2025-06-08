@@ -6,14 +6,23 @@
 use actix_multipart::Multipart;
 use futures::{StreamExt, TryStreamExt};
 use log::{error, info, warn};
+use std::env;
 
 use crate::config::{defaults, HandlerConfig, JobPaths};
 use crate::error::HandlerError;
 use crate::file_utils::{generate_unique_job_paths, read_text_file, save_file_data};
 use crate::models::TranscriptionParams;
 
-/// Max file size (512MB)
-const MAX_FILE_SIZE: usize = 512 * 1024 * 1024;
+/// Default max file size (512MB)
+const DEFAULT_MAX_FILE_SIZE: usize = 536870912;
+
+/// Get max file size from environment or use default
+fn get_max_file_size() -> usize {
+    env::var("MAX_FILE_SIZE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_MAX_FILE_SIZE)
+}
 
 /// Extract and process multipart form data for transcription requests
 ///
@@ -135,9 +144,10 @@ pub async fn extract_form_data(
                     })?;
 
                     // Check file size limits
+                    let max_file_size = get_max_file_size();
                     total_size += data.len();
-                    if total_size > MAX_FILE_SIZE {
-                        return Err(HandlerError::FileTooLarge(total_size, MAX_FILE_SIZE)
+                    if total_size > max_file_size {
+                        return Err(HandlerError::FileTooLarge(total_size, max_file_size)
                             .with_cleanup(Some(&paths.folder)));
                     }
 

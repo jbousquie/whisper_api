@@ -16,7 +16,8 @@ The Whisper API follows a queue-based architecture with modular components:
 
 2. **Queue Manager**:
    - Manages a FIFO queue of transcription jobs
-   - Processes one job at a time (sequential processing)
+   - Supports both sequential and concurrent processing modes (configurable via `ENABLE_CONCURRENCY`)
+   - Configurable number of concurrent jobs when concurrency is enabled (`MAX_CONCURRENT_JOBS`)
    - Invokes the WhisperX command to transcribe audio files
    - Stores results in a temporary directory
    - Tracks job status (queued, processing, completed, failed)
@@ -31,7 +32,34 @@ The Whisper API follows a queue-based architecture with modular components:
    - After successful download, all files (both temporary and output files) are cleaned up
    - Alternatively, client can cancel a pending job if transcription is no longer needed
 
-## Environment Variables
+## Configuration
+
+### Configuration File
+
+The application uses a configuration system with the following priority (highest to lowest):
+
+1. Environment variables
+2. Configuration file (`whisper_api.conf`)
+3. Default constants
+
+The configuration file uses TOML format and should be placed in the same directory as the application. Here's an example of the configuration file:
+
+```
+# Whisper API Configuration File
+WHISPER_API_HOST = "192.168.0.116"
+WHISPER_API_PORT = "8181"
+WHISPER_CMD = "/home/llm/whisper_api/whisperx.sh"
+# Additional configuration options...
+```
+
+At startup, the application will:
+1. Try to load the configuration from `whisper_api.conf`
+2. Set environment variables from the config file if they don't already exist
+3. Use environment variables or fall back to default values
+
+This allows for flexible configuration management across different environments.
+
+### Environment Variables
 
 The application can be configured using the following environment variables:
 
@@ -48,13 +76,17 @@ The application can be configured using the following environment variables:
 | `WHISPER_API_KEEPALIVE` | Keep-alive timeout in seconds | `480` |
 | `WHISPER_JOB_RETENTION_HOURS` | Number of hours to keep job files before automatic cleanup | `48` |
 | `WHISPER_CLEANUP_INTERVAL_HOURS` | Interval in hours between cleanup runs | `1` |
+| `MAX_FILE_SIZE` | Maximum file size for uploads in bytes | `536870912` (512MB) |
+| `ENABLE_CONCURRENCY` | Enable concurrent job processing | `false` |
+| `MAX_CONCURRENT_JOBS` | Maximum number of concurrent jobs (when enabled) | `6` |
+| `ENABLE_AUTHORIZATION` | Require authentication for all API requests | `true` |
 | `RUST_LOG` | Logging level (error, warn, info, debug, trace) | `info` |
 | `HF_TOKEN` | Hugging Face API token for diarization models access (can alternatively be passed per-request or loaded from file) | None |
 | `WHISPER_HF_TOKEN_FILE` | Path to file containing Hugging Face API token | `/home/llm/whisper_api/hf_token.txt` |
 
 ## Authentication
 
-All API requests must include an Authorization header with a Bearer token:
+By default, all API requests must include an Authorization header with a Bearer token:
 
 ```
 Authorization: Bearer your_token_here
@@ -63,6 +95,8 @@ Authorization: Bearer your_token_here
 Requests without a valid Authorization header will be rejected with a 401 Unauthorized response.
 
 Note: Currently, the API uses a dummy verification that accepts any token, but the header must be present and properly formatted.
+
+Authentication can be disabled by setting `ENABLE_AUTHORIZATION=false` in the configuration file or environment variables. When disabled, requests will be accepted without any Authorization header.
 
 ## API Endpoints
 
@@ -156,6 +190,42 @@ DELETE /transcription/{job_id}
 }
 ```
 
+## Configuration Example
+
+A complete `whisper_api.conf` file might look like this:
+
+```
+# Server Configuration 
+WHISPER_API_HOST = "0.0.0.0"
+WHISPER_API_PORT = "9000"
+WHISPER_API_TIMEOUT = 600
+WHISPER_API_KEEPALIVE = 600
+
+# File Storage Configuration
+WHISPER_TMP_FILES = "/data/whisper/tmp"
+WHISPER_HF_TOKEN_FILE = "/data/secrets/hf_token.txt"
+
+# WhisperX Configuration
+WHISPER_CMD = "/opt/whisper/whisperx.sh"
+WHISPER_MODELS_DIR = "/opt/whisper/models"
+WHISPER_OUTPUT_DIR = "/data/whisper/output"
+WHISPER_OUTPUT_FORMAT = "srt"
+
+# Job Management Configuration
+WHISPER_JOB_RETENTION_HOURS = 24
+WHISPER_CLEANUP_INTERVAL_HOURS = 6
+
+# Upload Configuration
+MAX_FILE_SIZE = 1073741824  # 1GB
+
+# Concurrency Configuration
+ENABLE_CONCURRENCY = true
+MAX_CONCURRENT_JOBS = 6
+
+# Security Configuration
+ENABLE_AUTHORIZATION = true
+```
+
 ## Test Commands
 
 ### Submit Transcription
@@ -176,7 +246,10 @@ curl -X GET "http://localhost:8181/transcription/YOUR_JOB_ID" \
   -H "Authorization: Bearer your_token_here"
 ```
 
-Note: The maximum file size accepted is 512 MB.
+Note: 
+- The maximum file size is configurable using the `MAX_FILE_SIZE` setting (default: 512 MB).
+- Job processing can be configured for concurrent operation by setting `ENABLE_CONCURRENCY=true` and `MAX_CONCURRENT_JOBS` to the desired number of simultaneous jobs (default: 6).
+- When concurrency is enabled, the queue position reflects the "batch" in which a job will be processed rather than its exact position in the queue.
 
 ### Examples
 
@@ -244,11 +317,32 @@ The API is organized into modular components:
 - **models.rs**: Data structures for requests and responses
 - **file_utils.rs**: File operations and resource management
 - **queue_manager.rs**: Job queue and transcription processing with secure file cleanup
-- **config.rs**: Application configuration 
+- **config.rs**: Application configuration management
+- **config_loader.rs**: Configuration loading from TOML file and environment variables
 - **error.rs**: Error handling and HTTP responses
 - **whisperx.sh**: Wrapper script for running WhisperX in its virtual environment
 
 The `whisperx.sh` script is responsible for activating the Python virtual environment, running the WhisperX command with the provided arguments, and then deactivating the environment. This ensures proper execution of WhisperX without requiring the API to manage Python environments directly.
+
+The path to this script can be configured via the `WHISPER_CMD` setting in the configuration file or environment variable.
+
+## Processing Models
+
+The Whisper API supports two processing models that can be configured via the `ENABLE_CONCURRENCY` setting:
+
+1. **Sequential Processing** (default, `ENABLE_CONCURRENCY=false`):
+   - Jobs are processed one at a time in FIFO order
+   - Prevents GPU memory contention by ensuring only one transcription runs at a time
+   - Simplifies resource management and provides predictable processing
+   - Queue position directly indicates how many jobs are ahead in the queue
+   - Recommended for systems with limited GPU memory
+
+2. **Concurrent Processing** (`ENABLE_CONCURRENCY=true`):
+   - Multiple jobs can be processed simultaneously
+   - The number of concurrent jobs is controlled by the `MAX_CONCURRENT_JOBS` setting (default: 6)
+   - Increases throughput when sufficient GPU memory is available
+   - Queue positions are reported in "batches" based on concurrency level
+   - Optimal for systems with multiple GPUs or high-memory GPUs
 
 ## Security and Privacy
 

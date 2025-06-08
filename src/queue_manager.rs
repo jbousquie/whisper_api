@@ -358,9 +358,6 @@ impl QueueManager {
         });
     }
 
-    // The check_and_start_next_job method has been removed as it's replaced by check_and_start_next_jobs
-    // which is directly called where needed
-
     /// Process a transcription job by invoking WhisperX
     async fn check_and_start_next_jobs(
         state_guard: &mut QueueState,

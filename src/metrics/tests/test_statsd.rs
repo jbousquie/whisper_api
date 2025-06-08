@@ -12,10 +12,10 @@
 /// ```
 use std::time::Duration;
 use tokio::time::sleep;
-use whisper_api::metrics::metrics::{create_metrics_exporter, Metrics};
+use crate::metrics::metrics::{create_metrics_exporter, Metrics};
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn test_statsd_integration() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logging
     env_logger::init();
 
@@ -27,7 +27,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some("localhost:8125"),
         Some("whisper_api_test"), // prefix
         Some(1.0),                // sample rate
-    );
+    )?;
 
     let metrics = Metrics::new(metrics_exporter);
 
@@ -70,7 +70,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     metrics.record_file_size(1024000.0).await;
     sleep(Duration::from_millis(100)).await;
 
-    println!("Test completed! Check your StatsD receiver for the metrics.");
+    println!("Test completed ! Check your StatsD receiver for the metrics.");
 
     Ok(())
 }

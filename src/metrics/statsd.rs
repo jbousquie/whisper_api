@@ -1,3 +1,4 @@
+use crate::metrics::error::{validation, MetricsError};
 /// StatsD Exporter for Whisper API Metrics
 ///
 /// This module provides a complete implementation for StatsD metrics export.
@@ -9,7 +10,6 @@
 /// - Gauges: `metric_name:value|g[|#tag1:value1,tag2:value2]`
 /// - Timers/Histograms: `metric_name:value|ms[|@sample_rate][|#tag1:value1,tag2:value2]`
 use crate::metrics::metrics::MetricsExporter;
-use crate::metrics::error::{MetricsError, validation};
 use async_trait::async_trait;
 use log::debug;
 use std::net::SocketAddr;
@@ -51,13 +51,18 @@ impl StatsDExporter {
             endpoint.clone()
         };
 
-        let address = address
-            .parse::<SocketAddr>()
-            .map_err(|e| MetricsError::configuration_error(format!("Invalid StatsD endpoint '{}': {}", endpoint, e)))?;
+        let address = address.parse::<SocketAddr>().map_err(|e| {
+            MetricsError::configuration_error(format!(
+                "Invalid StatsD endpoint '{}': {}",
+                endpoint, e
+            ))
+        })?;
 
         let sample_rate = sample_rate.unwrap_or(1.0);
         if !(0.0..=1.0).contains(&sample_rate) {
-            return Err(MetricsError::configuration_error("Sample rate must be between 0.0 and 1.0"));
+            return Err(MetricsError::configuration_error(
+                "Sample rate must be between 0.0 and 1.0",
+            ));
         }
 
         Ok(Self {
@@ -65,6 +70,25 @@ impl StatsDExporter {
             prefix,
             sample_rate,
         })
+    }
+
+    /// Create a new StatsD exporter from environment variables
+    ///
+    /// Environment variables:
+    /// - `STATSD_ENDPOINT`: StatsD server endpoint (default: "127.0.0.1:8125")    /// - `STATSD_PREFIX`: Optional prefix for all metric names
+    /// - `STATSD_SAMPLE_RATE`: Sample rate for metrics (default: 1.0)
+    #[allow(dead_code)]
+    pub fn from_env() -> Result<Self, MetricsError> {
+        let endpoint =
+            std::env::var("STATSD_ENDPOINT").unwrap_or_else(|_| "127.0.0.1:8125".to_string());
+
+        let prefix = std::env::var("STATSD_PREFIX").ok();
+
+        let sample_rate = std::env::var("STATSD_SAMPLE_RATE")
+            .ok()
+            .and_then(|s| s.parse::<f64>().ok());
+
+        Self::new(endpoint, prefix, sample_rate)
     }
 
     /// Format metric name with optional prefix
@@ -96,18 +120,24 @@ impl StatsDExporter {
         } else {
             String::new()
         }
-    }    /// Send a StatsD message via UDP
+    }
+    /// Send a StatsD message via UDP
     async fn send_metric(&self, message: &str) -> Result<(), MetricsError> {
         // Skip sending if sampling and random check fails
         if self.sample_rate < 1.0 && fastrand::f64() > self.sample_rate {
             return Ok(());
         }
 
-        let socket = UdpSocket::bind("0.0.0.0:0").await
-            .map_err(|e| MetricsError::network_error(format!("Failed to create UDP socket for StatsD: {}", e)))?;
-        
-        socket.send_to(message.as_bytes(), &self.address).await
-            .map_err(|e| MetricsError::network_error(format!("Failed to send StatsD metric: {}", e)))?;
+        let socket = UdpSocket::bind("0.0.0.0:0").await.map_err(|e| {
+            MetricsError::network_error(format!("Failed to create UDP socket for StatsD: {}", e))
+        })?;
+
+        socket
+            .send_to(message.as_bytes(), &self.address)
+            .await
+            .map_err(|e| {
+                MetricsError::network_error(format!("Failed to send StatsD metric: {}", e))
+            })?;
 
         debug!("Sent StatsD metric: {}", message);
         Ok(())
@@ -115,7 +145,8 @@ impl StatsDExporter {
 }
 
 #[async_trait]
-impl MetricsExporter for StatsDExporter {    /// Increment a counter metric
+impl MetricsExporter for StatsDExporter {
+    /// Increment a counter metric
     /// Format: metric_name:1|c[|@sample_rate][|#tags]
     async fn increment(&self, name: &str, labels: &[(&str, &str)]) -> Result<(), MetricsError> {
         // Validate inputs first
@@ -129,9 +160,15 @@ impl MetricsExporter for StatsDExporter {    /// Increment a counter metric
         let message = format!("{}:1|c{}{}", metric_name, sample_rate, tags);
         self.send_metric(&message).await?;
         Ok(())
-    }    /// Set a gauge metric value
+    }
+    /// Set a gauge metric value
     /// Format: metric_name:value|g[|#tags]
-    async fn set_gauge(&self, name: &str, value: f64, labels: &[(&str, &str)]) -> Result<(), MetricsError> {
+    async fn set_gauge(
+        &self,
+        name: &str,
+        value: f64,
+        labels: &[(&str, &str)],
+    ) -> Result<(), MetricsError> {
         // Validate inputs first
         validation::validate_metric_name(name)?;
         validation::validate_labels(labels)?;
@@ -143,9 +180,15 @@ impl MetricsExporter for StatsDExporter {    /// Increment a counter metric
         let message = format!("{}:{}|g{}", metric_name, value, tags);
         self.send_metric(&message).await?;
         Ok(())
-    }    /// Observe a value in a histogram/timer metric
+    }
+    /// Observe a value in a histogram/timer metric
     /// Format: metric_name:value|ms[|@sample_rate][|#tags]
-    async fn observe_histogram(&self, name: &str, value: f64, labels: &[(&str, &str)]) -> Result<(), MetricsError> {
+    async fn observe_histogram(
+        &self,
+        name: &str,
+        value: f64,
+        labels: &[(&str, &str)],
+    ) -> Result<(), MetricsError> {
         // Validate inputs first
         validation::validate_metric_name(name)?;
         validation::validate_labels(labels)?;

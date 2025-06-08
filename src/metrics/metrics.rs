@@ -3,6 +3,7 @@
 //! This module provides a pluggable metrics system that supports multiple monitoring
 //! backends including Prometheus, StatsD, and other monitoring systems.
 
+use crate::metrics::error::MetricsError;
 use crate::metrics::null::NullExporter;
 use crate::metrics::prometheus::PrometheusExporter;
 use crate::metrics::statsd::StatsDExporter;
@@ -14,16 +15,26 @@ use std::sync::Arc;
 #[async_trait]
 pub trait MetricsExporter: Send + Sync {
     /// Increment a counter metric
-    async fn increment(&self, name: &str, labels: &[(&str, &str)]);
+    async fn increment(&self, name: &str, labels: &[(&str, &str)]) -> Result<(), MetricsError>;
 
     /// Set a gauge metric value
-    async fn set_gauge(&self, name: &str, value: f64, labels: &[(&str, &str)]);
+    async fn set_gauge(
+        &self,
+        name: &str,
+        value: f64,
+        labels: &[(&str, &str)],
+    ) -> Result<(), MetricsError>;
 
     /// Observe a value in a histogram metric
-    async fn observe_histogram(&self, name: &str, value: f64, labels: &[(&str, &str)]);
+    async fn observe_histogram(
+        &self,
+        name: &str,
+        value: f64,
+        labels: &[(&str, &str)],
+    ) -> Result<(), MetricsError>;
 
     /// Export metrics in the format expected by the monitoring system
-    async fn export(&self) -> Result<Vec<u8>, String>;
+    async fn export(&self) -> Result<Vec<u8>, MetricsError>;
 }
 
 /// Metrics facade for the application
@@ -39,22 +50,28 @@ impl Metrics {
 
     /// Increment a counter metric
     pub async fn increment(&self, name: &str, labels: &[(&str, &str)]) {
-        self.exporter.increment(name, labels).await
+        if let Err(e) = self.exporter.increment(name, labels).await {
+            warn!("Failed to increment metric '{}': {}", name, e);
+        }
     }
 
     /// Set a gauge metric value
     pub async fn set_gauge(&self, name: &str, value: f64, labels: &[(&str, &str)]) {
-        self.exporter.set_gauge(name, value, labels).await
+        if let Err(e) = self.exporter.set_gauge(name, value, labels).await {
+            warn!("Failed to set gauge metric '{}': {}", name, e);
+        }
     }
 
     /// Observe a value in a histogram metric
     pub async fn observe_histogram(&self, name: &str, value: f64, labels: &[(&str, &str)]) {
-        self.exporter.observe_histogram(name, value, labels).await
+        if let Err(e) = self.exporter.observe_histogram(name, value, labels).await {
+            warn!("Failed to observe histogram metric '{}': {}", name, e);
+        }
     }
 
     /// Export metrics in the format expected by the monitoring system
     pub async fn export(&self) -> Result<Vec<u8>, String> {
-        self.exporter.export().await
+        self.exporter.export().await.map_err(|e| e.to_string())
     }
 
     // Convenience methods for common metrics
@@ -186,7 +203,10 @@ pub fn create_metrics_exporter(
             ) {
                 Ok(exporter) => Arc::new(exporter),
                 Err(e) => {
-                    warn!("Failed to create StatsD exporter: {}, using null exporter", e);
+                    warn!(
+                        "Failed to create StatsD exporter: {}, using null exporter",
+                        e
+                    );
                     Arc::new(NullExporter)
                 }
             }

@@ -3,6 +3,7 @@
 // This module contains the metrics for the Whisper API.
 // It provides functionality to track and report various metrics
 
+pub mod error;
 pub mod metrics;
 pub mod null;
 pub mod prometheus;

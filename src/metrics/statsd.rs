@@ -9,6 +9,7 @@
 /// - Gauges: `metric_name:value|g[|#tag1:value1,tag2:value2]`
 /// - Timers/Histograms: `metric_name:value|ms[|@sample_rate][|#tag1:value1,tag2:value2]`
 use crate::metrics::metrics::MetricsExporter;
+use crate::metrics::error::MetricsError;
 use async_trait::async_trait;
 use log::{debug, error};
 use std::net::SocketAddr;
@@ -122,28 +123,28 @@ impl StatsDExporter {
 impl MetricsExporter for StatsDExporter {
     /// Increment a counter metric
     /// Format: metric_name:1|c[|@sample_rate][|#tags]
-    async fn increment(&self, name: &str, labels: &[(&str, &str)]) {
+    async fn increment(&self, name: &str, labels: &[(&str, &str)]) -> Result<(), MetricsError> {
         let metric_name = self.format_metric_name(name);
         let tags = self.format_tags(labels);
         let sample_rate = self.format_sample_rate();
 
         let message = format!("{}:1|c{}{}", metric_name, sample_rate, tags);
         self.send_metric(&message).await;
+        Ok(())
     }
-
     /// Set a gauge metric value
     /// Format: metric_name:value|g[|#tags]
-    async fn set_gauge(&self, name: &str, value: f64, labels: &[(&str, &str)]) {
+    async fn set_gauge(&self, name: &str, value: f64, labels: &[(&str, &str)]) -> Result<(), MetricsError> {
         let metric_name = self.format_metric_name(name);
         let tags = self.format_tags(labels);
 
         let message = format!("{}:{}|g{}", metric_name, value, tags);
         self.send_metric(&message).await;
+        Ok(())
     }
-
     /// Observe a value in a histogram/timer metric
     /// Format: metric_name:value|ms[|@sample_rate][|#tags]
-    async fn observe_histogram(&self, name: &str, value: f64, labels: &[(&str, &str)]) {
+    async fn observe_histogram(&self, name: &str, value: f64, labels: &[(&str, &str)]) -> Result<(), MetricsError> {
         let metric_name = self.format_metric_name(name);
         let tags = self.format_tags(labels);
         let sample_rate = self.format_sample_rate();
@@ -153,11 +154,11 @@ impl MetricsExporter for StatsDExporter {
 
         let message = format!("{}:{}|ms{}{}", metric_name, value_ms, sample_rate, tags);
         self.send_metric(&message).await;
+        Ok(())
     }
-
     /// Export metrics - StatsD doesn't support pull-based exports
     /// This method returns an empty result since StatsD is push-based
-    async fn export(&self) -> Result<Vec<u8>, String> {
+    async fn export(&self) -> Result<Vec<u8>, MetricsError> {
         // StatsD is a push-based system, not pull-based like Prometheus
         // Return empty response as there's nothing to export
         debug!("StatsD export called - StatsD is push-based, no data to export");

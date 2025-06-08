@@ -40,7 +40,7 @@ The codebase follows a modular design pattern with clear separation of concerns:
 
 ### 3. HTTP Request Handling
 - RESTful API endpoints implemented with Actix-web for high performance
-- Bearer token authentication required for all API endpoints
+- Configurable Bearer token authentication (can be enabled or disabled)
 - Multipart form data handling for audio file uploads (supports files up to 512MB)
 - Unique job IDs generated using UUIDs to prevent collisions
 - Job-specific temporary directories for secure file isolation
@@ -202,8 +202,13 @@ The codebase follows a modular design pattern with clear separation of concerns:
    - Confirmation or error message returned based on outcome
 
 ### Security and Privacy Features
-- **Authentication**:
+- **Configurable Authentication**:
    ```rust
+   // Check if authentication is enabled via configuration
+   if !is_authorization_enabled() {
+       return Ok(());
+   }
+   
    // Check if Authorization header exists and contains a Bearer token
    if let Some(auth_header) = req.headers().get(header::AUTHORIZATION) {
        if let Ok(auth_str) = auth_header.to_str() {
@@ -405,14 +410,15 @@ The codebase follows a modular design pattern with clear separation of concerns:
 - **Centralized Configuration Constants**:
    ```rust
    pub mod defaults {
-       pub const TEMP_DIR: &str = "/home/llm/whisper_api/tmp";
-       pub const LANGUAGE: &str = "fr";
-       pub const MODEL: &str = "large-v3";
-       pub const HF_TOKEN_FILE: &str = "/home/llm/whisper_api/hf_token.txt";
-       pub const VALID_OUTPUT_FORMATS: [&str; 6] = ["srt", "vtt", "txt", "tsv", "json", "aud"];
-       pub const MAX_FILE_SIZE: usize = 536870912; // 512MB
-       pub const ENABLE_CONCURRENCY: bool = false; 
-       pub const MAX_CONCURRENT_JOBS: usize = 6;
+          pub const TEMP_DIR: &str = "/home/llm/whisper_api/tmp";
+          pub const LANGUAGE: &str = "fr";
+          pub const MODEL: &str = "large-v3";
+          pub const HF_TOKEN_FILE: &str = "/home/llm/whisper_api/hf_token.txt";
+          pub const VALID_OUTPUT_FORMATS: [&str; 6] = ["srt", "vtt", "txt", "tsv", "json", "aud"];
+          pub const MAX_FILE_SIZE: usize = 536870912; // 512MB
+          pub const ENABLE_CONCURRENCY: bool = false; 
+          pub const MAX_CONCURRENT_JOBS: usize = 6;
+          pub const ENABLE_AUTHORIZATION: bool = true; // Authentication required by default
    }
    ```
 
@@ -457,7 +463,7 @@ The codebase follows a modular design pattern with clear separation of concerns:
 
 ### 1. Submit Transcription (`POST /transcribe`)
 - **Purpose**: Upload audio file and start transcription
-- **Headers**: `Authorization: Bearer <token>` (required)
+- **Headers**: `Authorization: Bearer <token>` (required when authentication is enabled)
 - **Form Parameters**:
   - `file`: Audio file (required, configurable max size, default: 512MB)
   - `language`: Language code (optional, default: "fr")
@@ -472,7 +478,7 @@ The codebase follows a modular design pattern with clear separation of concerns:
 ### 2. Check Status (`GET /transcription/{job_id}`)
 - **Purpose**: Monitor transcription progress
 - **Path Parameters**: `job_id` (UUID from submission)
-- **Headers**: `Authorization: Bearer <token>` (required)
+- **Headers**: `Authorization: Bearer <token>` (required when authentication is enabled)
 - **Response**: 
   - Current job status (Queued, Processing, Completed, Failed)
   - Queue position (only for Queued jobs, 1-based index)
@@ -481,7 +487,7 @@ The codebase follows a modular design pattern with clear separation of concerns:
 ### 3. Get Result (`GET /transcription/{job_id}/result`)
 - **Purpose**: Retrieve completed transcription
 - **Path Parameters**: `job_id` (UUID from submission)
-- **Headers**: `Authorization: Bearer <token>` (required)
+- **Headers**: `Authorization: Bearer <token>` (required when authentication is enabled)
 - **Response**: Transcription text, language, and segments
 - **Error Handling**: Job not found, job not completed, server errors, authentication failures
 - **Side Effects**: Triggers cleanup of job files after delivery
@@ -489,7 +495,7 @@ The codebase follows a modular design pattern with clear separation of concerns:
 ### 4. Cancel Job (`DELETE /transcription/{job_id}`)
 - **Purpose**: Cancel pending transcription
 - **Path Parameters**: `job_id` (UUID from submission)
-- **Headers**: `Authorization: Bearer <token>` (required)
+- **Headers**: `Authorization: Bearer <token>` (required when authentication is enabled)
 - **Response**: Success confirmation or error message
 - **Error Handling**: Job not found, job already processing, server errors, authentication failures
 - **Side Effects**: Removes job files if successfully canceled
@@ -509,8 +515,13 @@ The codebase follows a modular design pattern with clear separation of concerns:
   - **Configuration Options**:
     - TOML configuration file (`whisper_api.conf`) for persistent configuration
     - Environment variables for runtime overrides
-    - 17+ configurable parameters including concurrency settings
+    - 18+ configurable parameters including concurrency and security settings
     - Defaults suitable for standard deployments
+  
+  - **Authentication Configuration**:
+    - `ENABLE_AUTHORIZATION`: Boolean flag to enable/disable authentication requirement (default: true)
+    - When enabled, all API requests must include a valid Bearer token
+    - When disabled, API endpoints can be accessed without authentication
   
   - **Concurrency Configuration**:
     - `ENABLE_CONCURRENCY`: Boolean flag to enable/disable concurrent processing (default: false)

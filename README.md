@@ -79,13 +79,14 @@ The application can be configured using the following environment variables:
 | `MAX_FILE_SIZE` | Maximum file size for uploads in bytes | `536870912` (512MB) |
 | `ENABLE_CONCURRENCY` | Enable concurrent job processing | `false` |
 | `MAX_CONCURRENT_JOBS` | Maximum number of concurrent jobs (when enabled) | `6` |
+| `ENABLE_AUTHORIZATION` | Require authentication for all API requests | `true` |
 | `RUST_LOG` | Logging level (error, warn, info, debug, trace) | `info` |
 | `HF_TOKEN` | Hugging Face API token for diarization models access (can alternatively be passed per-request or loaded from file) | None |
 | `WHISPER_HF_TOKEN_FILE` | Path to file containing Hugging Face API token | `/home/llm/whisper_api/hf_token.txt` |
 
 ## Authentication
 
-All API requests must include an Authorization header with a Bearer token:
+By default, all API requests must include an Authorization header with a Bearer token:
 
 ```
 Authorization: Bearer your_token_here
@@ -94,6 +95,8 @@ Authorization: Bearer your_token_here
 Requests without a valid Authorization header will be rejected with a 401 Unauthorized response.
 
 Note: Currently, the API uses a dummy verification that accepts any token, but the header must be present and properly formatted.
+
+Authentication can be disabled by setting `ENABLE_AUTHORIZATION=false` in the configuration file or environment variables. When disabled, requests will be accepted without any Authorization header.
 
 ## API Endpoints
 
@@ -218,6 +221,9 @@ MAX_FILE_SIZE = 1073741824  # 1GB
 # Concurrency Configuration
 ENABLE_CONCURRENCY = true
 MAX_CONCURRENT_JOBS = 6
+
+# Security Configuration
+ENABLE_AUTHORIZATION = true
 ```
 
 ## Test Commands

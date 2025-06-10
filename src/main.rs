@@ -1,4 +1,4 @@
-use actix_web::{middleware::Logger, web, App, HttpServer};
+use actix_web::{middleware::Logger, web, App, HttpResponse, HttpServer};
 use env_logger::Env;
 use log::{info, warn};
 
@@ -16,8 +16,6 @@ use crate::metrics::metrics::{create_metrics_exporter, Metrics};
 use config::{HandlerConfig, MetricsConfig};
 
 // Import the types we need
-use config::HandlerConfig;
-
 use handlers::{
     cancel_transcription, transcribe, transcription_result, transcription_status, Authentication,
 };

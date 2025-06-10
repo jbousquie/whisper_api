@@ -99,13 +99,13 @@ Le module StatsD permet l'envoi de métriques vers des serveurs StatsD compatibl
 - Format StatsD : respect du protocole standard `metric_name:value|type|@sample_rate`
 - Types supportés : c (counter), g (gauge), h (histogram)
 
-#### Fonctionnalités
+#### Fonctionnalités StatsD
 
 - Envoi asynchrone : utilise `tokio::net::UdpSocket` pour l'envoi non-bloquant
 - Gestion d'erreurs : logging des erreurs sans interrompre l'application
 - Formatage automatique : conversion des métriques au format StatsD
 
-#### Configuration
+### Configuration StatsD
 
 Le fichier `STATSD.md` fournit un guide complet d'intégration avec différents backends (Graphite, InfluxDB, DataDog).
 
@@ -123,7 +123,7 @@ Le module Null implémente un backend "no-op" pour les métriques.
 
 No op...
   
-#### Configuration et sélection du backend
+#### Configuration générale et sélection du backend
 
 Le système utilise des variables d'environnement pour sélectionner le backend
 

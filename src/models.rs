@@ -29,12 +29,14 @@ pub struct TranscriptionParams {
     pub prompt: String,
     /// HuggingFace token for diarization
     pub hf_token: Option<String>,
-    /// Output format (srt, vtt, txt, tsv, json, aud)
-    pub output_format: Option<String>,
+    /// Response format (srt, vtt, txt, tsv, json, aud)
+    pub response_format: Option<String>,
     /// Path to the uploaded audio file
     pub audio_file: Option<PathBuf>,
     /// Path to the folder containing the job files
     pub folder_path: Option<PathBuf>,
+    /// Synchronous processing mode (true = wait for result, false = async job)
+    pub sync: bool,
 }
 
 /// Error response for API

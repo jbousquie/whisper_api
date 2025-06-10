@@ -39,16 +39,16 @@ pub async fn extract_form_data(
     config: &HandlerConfig,
 ) -> Result<(TranscriptionParams, JobPaths), HandlerError> {
     // Initialize parameters with defaults
-    // Initialize parameters with defaults
     let mut params = TranscriptionParams {
         language: String::from(defaults::LANGUAGE),
         model: String::from(defaults::MODEL),
         diarize: true, // Default: enable speaker diarization
         prompt: String::new(),
         hf_token: None, // Will be set from file if not in request
-        output_format: None,
+        response_format: None,
         audio_file: None,
         folder_path: None,
+        sync: config.default_sync_mode, // Use configured default sync mode
     };
 
     let mut job_paths: Option<JobPaths> = None;
@@ -67,7 +67,7 @@ pub async fn extract_form_data(
             .unwrap_or_default();
 
         match field_name.as_str() {
-            "language" | "model" | "prompt" | "hf_token" | "output_format" => {
+            "language" | "model" | "prompt" | "hf_token" | "response_format" | "sync" => {
                 // Read text parameter
                 let mut value = String::new();
                 while let Some(chunk) = field.next().await {
@@ -89,13 +89,20 @@ pub async fn extract_form_data(
                         "model" => params.model = value,
                         "prompt" => params.prompt = value,
                         "hf_token" => params.hf_token = Some(value),
-                        "output_format" => {
+                        "response_format" => {
                             // Validate output format
                             if HandlerConfig::validate_output_format(&value) {
-                                params.output_format = Some(value);
+                                params.response_format = Some(value);
                             } else {
                                 return Err(HandlerError::InvalidOutputFormat(value));
                             }
+                        }
+                        "sync" => {
+                            // Parse boolean value (various formats)
+                            params.sync = match value.trim().to_lowercase().as_str() {
+                                "true" | "1" | "yes" | "on" => true,
+                                _ => false, // Default to async mode for any other value
+                            };
                         }
                         _ => {}
                     }

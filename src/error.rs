@@ -6,6 +6,7 @@
 use std::io;
 use std::path::PathBuf;
 use thiserror::Error;
+use tokio::sync::oneshot;
 
 use actix_web::{HttpResponse, ResponseError};
 
@@ -45,6 +46,14 @@ pub enum HandlerError {
     /// Error when job cannot be canceled
     #[error("Cannot cancel job: {0}")]
     CannotCancelJob(String),
+    
+    /// Error when communication channel fails
+    #[error("Communication error: channel closed")]
+    ChannelError,
+    
+    /// Error when a synchronous job times out
+    #[error("Synchronous processing timeout after {0} seconds")]
+    SyncTimeout(u64),
 }
 
 impl HandlerError {
@@ -97,5 +106,12 @@ impl From<crate::queue_manager::QueueError> for HandlerError {
             QueueError::TranscriptionError(e) => HandlerError::QueueError(e),
             QueueError::QueueError(e) => HandlerError::QueueError(e),
         }
+    }
+}
+
+/// Convert oneshot::RecvError to HandlerError
+impl From<oneshot::error::RecvError> for HandlerError {
+    fn from(_: oneshot::error::RecvError) -> Self {
+        HandlerError::ChannelError
     }
 }

@@ -15,7 +15,7 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use thiserror::Error;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, Mutex, oneshot};
 
 const DEFAULT_WHISPER_CMD: &str = "/home/llm/whisper_api/whisperx.sh";
 const DEFAULT_WHISPER_MODELS_DIR: &str = "/home/llm/models/whisperx_models";
@@ -95,16 +95,21 @@ impl Default for WhisperConfig {
 /// Job status enum for tracking the progress of transcription jobs
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "status")]
+/// Queue State Representation
+/// Each job has exactly one status entry and at most one result
 pub enum JobStatus {
-    /// Job is waiting in the queue
+    /// Job is waiting in queue
     Queued,
     /// Job is currently being processed
     Processing,
-    /// Job is completed successfully
+    /// Job has completed successfully
     Completed,
-    /// Job failed with error message
+    /// Job has failed (with error message)
     Failed(String),
 }
+
+/// Type for synchronous job completions
+pub type SyncCompletionSender = oneshot::Sender<TranscriptionResult>;
 
 /// Transcription job structure
 #[derive(Debug, Clone)]
@@ -203,6 +208,8 @@ struct QueueState {
     processing_jobs: HashSet<String>,
     /// Map of job metadata by job ID
     job_metadata: HashMap<String, JobMetadata>,
+    /// Map of synchronous job completion channels
+    sync_jobs: HashMap<String, SyncCompletionSender>,
 }
 
 /// Queue Manager for handling transcription jobs
@@ -242,9 +249,10 @@ impl QueueManager {
             queue: VecDeque::new(),
             statuses: HashMap::new(),
             results: HashMap::new(),
-            processing_count: 0,             // Initially not processing any job
+            processing_count: 0, // Initially not processing any job
             processing_jobs: HashSet::new(), // No jobs being processed
             job_metadata: HashMap::new(),
+            sync_jobs: HashMap::new(),
         }));
 
         // Create the queue manager
@@ -507,6 +515,17 @@ impl QueueManager {
             segments: Vec::new(),
         };
 
+        // Notify any waiting sync request
+        {
+            let mut state_guard = state.lock().await;
+            if let Some(tx) = state_guard.sync_jobs.remove(&job.id) {
+                let result_clone = result.clone();
+                if tx.send(result_clone).is_ok() {
+                    info!("Notified waiting sync request for job {}", job.id);
+                }
+            }
+        }
+
         Ok(result)
     }
 
@@ -626,17 +645,17 @@ impl QueueManager {
             } else {
                 state.processing_count == 0
             };
-
+            
             if can_process_now {
                 // Start processing immediately
                 state.processing_count += 1;
                 state.processing_jobs.insert(job_id.clone());
                 state.statuses.insert(job_id.clone(), JobStatus::Processing);
-
+                
                 // Clone job for sending after releasing lock
                 let job_to_send = job;
                 drop(state); // Release lock before async operation
-
+                
                 // Send job to processor
                 if let Err(e) = self.job_tx.send(job_to_send).await {
                     // Reacquire lock to fix state if send fails
@@ -645,8 +664,7 @@ impl QueueManager {
                     state.processing_jobs.remove(&job_id);
                     error!("Failed to send job to processor: {}", e);
                     return Err(QueueError::QueueError(format!(
-                        "Failed to send job to processor: {}",
-                        e
+                        "Failed to send job to processor: {}", e
                     )));
                 }
             } else {
@@ -654,17 +672,58 @@ impl QueueManager {
                 // Jobs are always added to the back of the queue
                 state.queue.push_back(job);
                 state.statuses.insert(job_id.clone(), JobStatus::Queued);
-
-                info!(
-                    "Job {} added to queue (position: {})",
-                    job_id,
-                    state.queue.len()
-                );
+                
+                info!("Job {} added to queue (position: {})", job_id, state.queue.len());
             }
         } // Lock is automatically released when state goes out of scope
 
         info!("Job {} registered", job_id);
         Ok(())
+    }
+
+    /// Register a synchronous completion channel for a job
+    /// This allows the HTTP handler to be notified when a job completes
+    pub async fn register_sync_channel(&self, job_id: &str, tx: SyncCompletionSender) -> Result<(), QueueError> {
+        let mut state = self.state.lock().await;
+        
+        // Check if job exists
+        if !state.statuses.contains_key(job_id) {
+            return Err(QueueError::JobNotFound(job_id.to_string()));
+        }
+        
+        // Register the channel
+        state.sync_jobs.insert(job_id.to_string(), tx);
+        info!("Registered sync channel for job {}", job_id);
+        
+        // If job is already completed, notify immediately
+        let should_notify = match state.statuses.get(job_id) {
+            Some(JobStatus::Completed) => true,
+            _ => false
+        };
+        
+        if should_notify {
+            // Get the result first (if available)
+            let result_opt = state.results.get(job_id).cloned();
+            
+            if let Some(result) = result_opt {
+                // Now get the channel
+                if let Some(tx) = state.sync_jobs.remove(job_id) {
+                    drop(state); // Release lock before sending
+                    let _ = tx.send(result);
+                    info!("Immediately notified waiting sync request for already completed job {}", job_id);
+                    return Ok(());
+                }
+            }
+        }
+        
+        Ok(())
+    }
+
+    /// Remove a synchronous completion channel for a job
+    /// This is used when a request times out or is cancelled
+    pub async fn remove_sync_channel(&self, job_id: &str) -> bool {
+        let mut state = self.state.lock().await;
+        state.sync_jobs.remove(job_id).is_some()
     }
 
     /// Get the status of a job

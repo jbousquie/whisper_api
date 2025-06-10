@@ -17,4 +17,4 @@ pub use config_loader::load_config;
 pub use error::HandlerError;
 pub use handlers::{cancel_transcription, transcribe, transcription_result, transcription_status};
 pub use models::{TranscriptionResponse, ErrorResponse, SuccessResponse};
-pub use queue_manager::{QueueManager, TranscriptionJob, WhisperConfig};
+pub use queue_manager::{QueueManager, TranscriptionJob, WhisperConfig, SyncCompletionSender};

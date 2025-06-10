@@ -74,6 +74,7 @@ The application can be configured using the following environment variables:
 | `WHISPER_API_PORT` | Port for the HTTP server | `8181` |
 | `WHISPER_API_TIMEOUT` | Client disconnect timeout in seconds | `480` |
 | `WHISPER_API_KEEPALIVE` | Keep-alive timeout in seconds | `480` |
+| `HTTP_WORKER_NUMBER` | Number of HTTP worker processes (0 = use number of CPU cores) | `0` |
 | `WHISPER_JOB_RETENTION_HOURS` | Number of hours to keep job files before automatic cleanup | `48` |
 | `WHISPER_CLEANUP_INTERVAL_HOURS` | Interval in hours between cleanup runs | `1` |
 | `MAX_FILE_SIZE` | Maximum file size for uploads in bytes | `536870912` (512MB) |
@@ -200,6 +201,7 @@ WHISPER_API_HOST = "0.0.0.0"
 WHISPER_API_PORT = "9000"
 WHISPER_API_TIMEOUT = 600
 WHISPER_API_KEEPALIVE = 600
+HTTP_WORKER_NUMBER = 4  # Use 4 workers (limited to number of CPU cores)
 
 # File Storage Configuration
 WHISPER_TMP_FILES = "/data/whisper/tmp"
@@ -250,6 +252,7 @@ Note:
 - The maximum file size is configurable using the `MAX_FILE_SIZE` setting (default: 512 MB).
 - Job processing can be configured for concurrent operation by setting `ENABLE_CONCURRENCY=true` and `MAX_CONCURRENT_JOBS` to the desired number of simultaneous jobs (default: 6).
 - When concurrency is enabled, the queue position reflects the "batch" in which a job will be processed rather than its exact position in the queue.
+- The number of HTTP workers is configurable using the `HTTP_WORKER_NUMBER` setting (0 = use number of CPU cores, >0 = use specified number up to the number of CPU cores).
 
 ### Examples
 

@@ -22,6 +22,7 @@ const DEFAULT_WHISPER_API_HOST: &str = "127.0.0.1";
 const DEFAULT_WHISPER_API_PORT: &str = "8181";
 const DEFAULT_WHISPER_API_TIMEOUT: u64 = 480;
 const DEFAULT_WHISPER_API_KEEPALIVE: u64 = 480;
+const DEFAULT_HTTP_WORKER_NUMBER: usize = 0; // 0 means use number of CPU cores
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
@@ -68,6 +69,29 @@ async fn main() -> std::io::Result<()> {
             .unwrap_or(DEFAULT_WHISPER_API_KEEPALIVE),
     );
 
+    // Get the number of workers from configuration (0 = use number of CPU cores)
+    let workers = std::env::var("HTTP_WORKER_NUMBER")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_HTTP_WORKER_NUMBER);
+
+    // Number of available CPU cores
+    let num_cpus = num_cpus::get();
+
+    // Calculate actual workers to use:
+    // - If workers is 0, use number of CPU cores
+    // - Otherwise, use workers but cap at number of CPU cores
+    let workers_to_use = if workers == 0 {
+        num_cpus
+    } else {
+        std::cmp::min(workers, num_cpus)
+    };
+
+    info!(
+        "Using {} HTTP worker(s) (system has {} CPU cores)",
+        workers_to_use, num_cpus
+    );
+
     info!("Starting Whisper API server on http://{}:{}", host, port);
     info!("Using temp directory: {}", tmp_dir);
     info!("WhisperX command: {}", command_path);
@@ -87,6 +111,7 @@ async fn main() -> std::io::Result<()> {
     .bind(format!("{}:{}", host, port))?
     .client_disconnect_timeout(timeout)
     .keep_alive(keep_alive)
+    .workers(workers_to_use)
     .run()
     .await
 }

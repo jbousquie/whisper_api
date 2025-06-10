@@ -323,6 +323,7 @@ The codebase follows a modular design pattern with clear separation of concerns:
   # Server Configuration 
   WHISPER_API_HOST = "127.0.0.1"
   WHISPER_API_PORT = "8181"
+  HTTP_WORKER_NUMBER = 0  # Use number of CPU cores
   
   # File Storage Configuration
   WHISPER_TMP_FILES = "/home/llm/whisper_api/tmp"
@@ -369,6 +370,10 @@ The codebase follows a modular design pattern with clear separation of concerns:
                .unwrap_or_else(|_| String::from(defaults::HF_TOKEN_FILE)),
            command_path: env::var("WHISPER_CMD")
                .unwrap_or_else(|_| String::from(DEFAULT_WHISPER_CMD)), // Uses whisperx.sh script by default
+           worker_number: env::var("HTTP_WORKER_NUMBER")
+               .ok()
+               .and_then(|s| s.parse().ok())
+               .unwrap_or(defaults::DEFAULT_HTTP_WORKER_NUMBER), // 0 means use CPU core count
        }
    }
    ```
@@ -419,6 +424,7 @@ The codebase follows a modular design pattern with clear separation of concerns:
           pub const ENABLE_CONCURRENCY: bool = false; 
           pub const MAX_CONCURRENT_JOBS: usize = 6;
           pub const ENABLE_AUTHORIZATION: bool = true; // Authentication required by default
+          pub const DEFAULT_HTTP_WORKER_NUMBER: usize = 0; // 0 means use number of CPU cores
    }
    ```
 
@@ -515,7 +521,7 @@ The codebase follows a modular design pattern with clear separation of concerns:
   - **Configuration Options**:
     - TOML configuration file (`whisper_api.conf`) for persistent configuration
     - Environment variables for runtime overrides
-    - 18+ configurable parameters including concurrency and security settings
+    - 19+ configurable parameters including concurrency, security, and server settings
     - Defaults suitable for standard deployments
   
   - **Authentication Configuration**:

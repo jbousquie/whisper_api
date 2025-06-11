@@ -18,7 +18,7 @@ The codebase follows a modular design pattern with clear separation of concerns:
 - **handlers/**: Contains HTTP endpoint implementations with form processing logic
   - **handlers/mod.rs**: Defines the module structure and re-exports handlers for use in main.rs
   - **handlers/form.rs**: Handles multipart form data extraction, parameter validation, and file processing with detailed error handling and HuggingFace token fallback mechanisms
-  - **handlers/routes.rs**: Implements the four main API endpoints (transcribe, transcription_status, transcription_result, cancel_transcription) with proper request handling and response formatting
+  - **handlers/routes.rs**: Implements the four main API endpoints (transcription, transcription_status, transcription_result, cancel_transcription) with proper request handling and response formatting
   - **handlers/authentication.rs**: Implements request authentication middleware that validates Bearer tokens in the Authorization header before processing any API request
 - **models.rs**: Defines data structures for requests, responses, and internal state
 - **queue_manager.rs**: Implements the job queue and transcription processing pipeline
@@ -92,7 +92,7 @@ The codebase follows a modular design pattern with clear separation of concerns:
          processing_jobs: HashSet<String>,  // Set of job IDs being processed
          // ...other fields
      }
-     
+
      // Queue manager determines mode from configuration:
      pub struct QueueManager {
          state: Arc<Mutex<QueueState>>,
@@ -115,14 +115,14 @@ The codebase follows a modular design pattern with clear separation of concerns:
          // In sequential mode, only process one job at a time
          if state_guard.processing_count == 0 { 1 } else { 0 }
      };
-     
+
      // Start as many jobs as we have slots for (may be 0, 1, or multiple)
      for _ in 0..available_slots {
          if let Some(next_job) = state_guard.queue.pop_front() {
              // Update processing tracking
              state_guard.processing_count += 1;
              state_guard.processing_jobs.insert(next_job.id.clone());
-             
+
              // Start the job in its own task
              tokio::spawn(async move {
                  // Process the job asynchronously
@@ -134,7 +134,7 @@ The codebase follows a modular design pattern with clear separation of concerns:
    - Manages state transitions and error handling
 
 ## Job Processing Workflow
-1. **Submission** (`POST /transcribe`):
+1. **Submission** (`POST /transcription`):
    - Client authenticates with Bearer token in the Authorization header
    - Client submits audio file and parameters via multipart form (with optional `sync` parameter)
    - Server validates input and parameters
@@ -151,7 +151,7 @@ The codebase follows a modular design pattern with clear separation of concerns:
      } else {
          state.processing_count == 0
      };
-     
+
      if can_process_now {
          // Start processing immediately
          state.processing_count += 1;
@@ -183,9 +183,9 @@ The codebase follows a modular design pattern with clear separation of concerns:
      // With concurrency enabled, adjust the queue position
      // to show which "batch" the job will be in
      if self.enable_concurrency && self.max_concurrent_jobs > 1 {
-         // Example: If max_concurrent_jobs=3, positions 1-3 → batch 1, 
+         // Example: If max_concurrent_jobs=3, positions 1-3 → batch 1,
          // positions 4-6 → batch 2, etc.
-         let adjusted_position = (position + self.max_concurrent_jobs - 1) 
+         let adjusted_position = (position + self.max_concurrent_jobs - 1)
                                 / self.max_concurrent_jobs;
          return Ok(Some(adjusted_position));
      }
@@ -213,7 +213,7 @@ The codebase follows a modular design pattern with clear separation of concerns:
    if !is_authorization_enabled() {
        return Ok(());
    }
-   
+
    // Check if Authorization header exists and contains a Bearer token
    if let Some(auth_header) = req.headers().get(header::AUTHORIZATION) {
        if let Ok(auth_str) = auth_header.to_str() {
@@ -260,7 +260,7 @@ The codebase follows a modular design pattern with clear separation of concerns:
          } else {
              if state_guard.processing_count == 0 { 1 } else { 0 }
          };
-         
+
          // Start only the number of jobs allowed by the current mode
          for _ in 0..available_slots {
              if let Some(next_job) = state_guard.queue.pop_front() {
@@ -325,22 +325,22 @@ The codebase follows a modular design pattern with clear separation of concerns:
     3. Default constants (lowest priority)
   - Example structure:
   ```toml
-  # Server Configuration 
+  # Server Configuration
   WHISPER_API_HOST = "127.0.0.1"
   WHISPER_API_PORT = "8181"
   HTTP_WORKER_NUMBER = 0  # Use number of CPU cores
-   
+
   # API Configuration
     SYNC_REQUEST_TIMEOUT_SECONDS = 1800  # 30 minutes timeout for synchronous requests
     DEFAULT_SYNC_MODE = false  # Default to asynchronous mode when 'sync' parameter is missing
-   
+
   # File Storage Configuration
   WHISPER_TMP_FILES = "/home/llm/whisper_api/tmp"
-  
+
   # Concurrency Configuration
   ENABLE_CONCURRENCY = false
   MAX_CONCURRENT_JOBS = 6
-  
+
   # Upload Configuration
   MAX_FILE_SIZE = 536870912  # 512MB
   ```
@@ -348,22 +348,22 @@ The codebase follows a modular design pattern with clear separation of concerns:
 - **WhisperX Script Wrapper**:
    ```bash
    #!/bin/bash
-   
+
    # Chemin absolu vers le répertoire de whisperx
    PROJECT_DIR="/home/llm/whisperx"
-   
+
    # Chemin absolu vers l'environnement virtuel : venv
    VENV_DIR="$PROJECT_DIR/venv"
-   
+
    # Chemin absolu vers la commande whisperx
    PYTHON_SCRIPT="$VENV_DIR/bin/whisperx"
-   
+
    # --- Activaction de l'environnement virtuel ---
    source "$VENV_DIR/bin/activate"
-   
+
    # --- Exécution du programme Python avec tous les arguments passés au script ---
    python "$PYTHON_SCRIPT" "$@"
-   
+
    # --- Désactivation l'environnement virtuel ---
    deactivate
    ```
@@ -392,13 +392,13 @@ The codebase follows a modular design pattern with clear separation of concerns:
    // Load configuration from TOML file and set environment variables
    pub fn load_config() -> bool {
        let config_path = Path::new(CONFIG_FILE_PATH);
-       
+
        // Check if configuration file exists
        if !config_path.exists() {
            debug!("Configuration file not found at: {}", CONFIG_FILE_PATH);
            return false;
        }
-       
+
        // Read and parse TOML content
        let config_content = match fs::read_to_string(config_path) {
            Ok(content) => content,
@@ -407,7 +407,7 @@ The codebase follows a modular design pattern with clear separation of concerns:
                return false;
            }
        };
-       
+
        // Convert TOML into environment variables, if they don't already exist
        // This ensures that explicit environment variables take precedence
        // over configuration file values
@@ -416,7 +416,7 @@ The codebase follows a modular design pattern with clear separation of concerns:
                env::set_var(key, value);
            }
        }
-       
+
        true
    }
    ```
@@ -430,7 +430,7 @@ The codebase follows a modular design pattern with clear separation of concerns:
              pub const HF_TOKEN_FILE: &str = "/home/llm/whisper_api/hf_token.txt";
              pub const VALID_OUTPUT_FORMATS: [&str; 6] = ["srt", "vtt", "txt", "tsv", "json", "aud"];
              pub const MAX_FILE_SIZE: usize = 536870912; // 512MB
-             pub const ENABLE_CONCURRENCY: bool = false; 
+             pub const ENABLE_CONCURRENCY: bool = false;
              pub const MAX_CONCURRENT_JOBS: usize = 6;
              pub const ENABLE_AUTHORIZATION: bool = true; // Authentication required by default
              pub const SYNC_REQUEST_TIMEOUT_SECONDS: u64 = 1800; // 30 minutes timeout for sync requests
@@ -444,7 +444,7 @@ The codebase follows a modular design pattern with clear separation of concerns:
   1. First tries to use token provided in request parameters
   2. If not provided, attempts to read from configured token file (`hf_token.txt`)
   3. If file is missing, empty, or unreadable, disables diarization
-  
+
 - **HuggingFace Token File**:
   - Default location: `/home/llm/whisper_api/hf_token.txt`
   - Configurable via `WHISPER_HF_TOKEN_FILE` environment variable
@@ -453,7 +453,7 @@ The codebase follows a modular design pattern with clear separation of concerns:
   - No token in file results in automatic diarization disabling
   - Prevents need to include token in every API request
   - Provides centralized management of authentication credentials
-  
+
 - **Automatic Diarization Fallback**:
   ```rust
   // If no token is available, disable diarization
@@ -478,7 +478,7 @@ The codebase follows a modular design pattern with clear separation of concerns:
 
 ## API Endpoints Documentation
 
-### 1. Submit Transcription (`POST /transcribe`)
+### 1. Submit Transcription (`POST /transcription`)
 - **Purpose**: Upload audio file and start transcription
 - **Headers**: `Authorization: Bearer <token>` (required when authentication is enabled)
 - **Form Parameters**:
@@ -488,7 +488,7 @@ The codebase follows a modular design pattern with clear separation of concerns:
   - `diarize`: Enable speaker diarization (optional, default: true)
   - `prompt`: Initial transcription prompt (optional)
   - `hf_token`: HuggingFace token for diarization (optional, if not provided will attempt to read from `hf_token.txt` file)
-  - `output_format`: Result format (optional, default: "txt")
+  - `response_format`: Result format (optional, default: "txt")
   - `sync`: Process synchronously and wait for result (optional, default: value of `DEFAULT_SYNC_MODE` configuration)
 - **Response (Async Mode)**: Job ID and status URL
 - **Response (Sync Mode)**: Complete transcription result including text and segments
@@ -498,7 +498,7 @@ The codebase follows a modular design pattern with clear separation of concerns:
 - **Purpose**: Monitor transcription progress
 - **Path Parameters**: `job_id` (UUID from submission)
 - **Headers**: `Authorization: Bearer <token>` (required when authentication is enabled)
-- **Response**: 
+- **Response**:
   - Current job status (Queued, Processing, Completed, Failed)
   - Queue position (only for Queued jobs, 1-based index)
 - **Error Handling**: Job not found, server errors, authentication failures
@@ -536,12 +536,12 @@ The codebase follows a modular design pattern with clear separation of concerns:
     - Environment variables for runtime overrides
     - 21+ configurable parameters including concurrency, security, API behavior, and server settings
     - Defaults suitable for standard deployments
-  
+
   - **Authentication Configuration**:
     - `ENABLE_AUTHORIZATION`: Boolean flag to enable/disable authentication requirement (default: true)
     - When enabled, all API requests must include a valid Bearer token
     - When disabled, API endpoints can be accessed without authentication
-  
+
   - **Concurrency Configuration**:
     - `ENABLE_CONCURRENCY`: Boolean flag to enable/disable concurrent processing (default: false)
     - `MAX_CONCURRENT_JOBS`: Maximum number of concurrent jobs when enabled (default: 6)
@@ -550,33 +550,33 @@ The codebase follows a modular design pattern with clear separation of concerns:
     - Unified architectural approach that handles both modes without code duplication:
       ```rust
       // Job Processing Implementation:
-    
+
       // 1. Job submission logic checks if immediate processing is possible:
       let can_process_now = if self.enable_concurrency {
           state.processing_count < self.max_concurrent_jobs
       } else {
           state.processing_count == 0
       };
-    
+
       // 2. Job processor manages concurrency dynamically:
       tokio::spawn(async move {
           // Each job is processed in its own task
           let result = Self::process_transcription(job, &config, state.clone()).await;
-        
+
           // After job completes, update state and start next jobs if possible
           {
               let mut state_guard = state.lock().await;
               // Update job status
               state_guard.processing_count -= 1;
               state_guard.processing_jobs.remove(&job_id);
-            
+
               // Check if more jobs can now be started
               Self::check_and_start_next_jobs(
                   &mut state_guard, &job_tx, enable_concurrency, max_concurrent_jobs
               ).await;
           }
       });
-    
+
       // 3. Each completed job may trigger additional jobs to start, maintaining
       //    either sequential or concurrent operation as configured
       ```

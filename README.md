@@ -106,7 +106,7 @@ Authentication can be disabled by setting `ENABLE_AUTHORIZATION=false` in the co
 ### Submit a Transcription Job
 
 ```
-POST /transcribe
+POST /transcription
 ```
 
 **Form Parameters**:
@@ -116,7 +116,7 @@ POST /transcribe
 - `diarize`: Whether to apply speaker diarization (optional, default: true)
 - `prompt`: Initial text prompt for transcription (optional, default: "")
 - `hf_token`: Hugging Face API token for accessing diarization models (optional, if not provided will try to load from `hf_token.txt` file). Required for speaker diarization to work properly.
-- `output_format`: Format of transcription output (optional, values: "srt", "vtt", "txt", "tsv", "json", "aud", default: "txt")
+- `response_format`: Format of transcription output (optional, values: "srt", "vtt", "txt", "tsv", "json", "aud", default: "txt")
 - `sync`: Whether to process the request synchronously (optional, values: "true", "false", default: value of `DEFAULT_SYNC_MODE` configuration)
 
 **Response (Async Mode - default)**:
@@ -254,19 +254,19 @@ ENABLE_AUTHORIZATION = true
 
 ### Submit Transcription (Asynchronous Mode - Default)
 ```bash
-curl -X POST "http://localhost:8181/transcribe" \
+curl -X POST "http://localhost:8181/transcription" \
   -H "Authorization: Bearer your_token_here" \
   -F "language=fr" \
   -F "diarize=true" \
   -F "prompt=Meeting transcript:" \
   -F "hf_token=YOUR_HUGGINGFACE_TOKEN" \
-  -F "output_format=txt" \
+  -F "response_format=txt" \
   -F "file=@/path/to/audio.wav"
 ```
 
 ### Submit Transcription (Synchronous Mode)
 ```bash
-curl -X POST "http://localhost:8181/transcribe" \
+curl -X POST "http://localhost:8181/transcription" \
   -H "Authorization: Bearer your_token_here" \
   -F "language=fr" \
   -F "diarize=true" \
@@ -318,7 +318,7 @@ Example response for a processing job:
 
 #### Disable Speaker Diarization
 ```bash
-curl -X POST "http://localhost:8181/transcribe" \
+curl -X POST "http://localhost:8181/transcription" \
   -H "Authorization: Bearer your_token_here" \
   -F "diarize=false" \
   -F "file=@/path/to/audio.wav"
@@ -326,7 +326,7 @@ curl -X POST "http://localhost:8181/transcribe" \
 
 #### Add Initial Prompt
 ```bash
-curl -X POST "http://localhost:8181/transcribe" \
+curl -X POST "http://localhost:8181/transcription" \
   -H "Authorization: Bearer your_token_here" \
   -F "prompt=This is an interview between John and Sarah:" \
   -F "file=@/path/to/audio.wav"
@@ -334,7 +334,7 @@ curl -X POST "http://localhost:8181/transcribe" \
 
 #### Use Diarization with Hugging Face Token
 ```bash
-curl -X POST "http://localhost:8181/transcribe" \
+curl -X POST "http://localhost:8181/transcription" \
   -H "Authorization: Bearer your_token_here" \
   -F "diarize=true" \
   -F "hf_token=YOUR_HUGGINGFACE_TOKEN" \
@@ -345,9 +345,9 @@ Note: If you don't provide the `hf_token` parameter, the system will attempt to 
 
 #### Specify Output Format
 ```bash
-curl -X POST "http://localhost:8181/transcribe" \
+curl -X POST "http://localhost:8181/transcription" \
   -H "Authorization: Bearer your_token_here" \
-  -F "output_format=srt" \
+  -F "response_format=srt" \
   -F "file=@/path/to/audio.wav"
 ```
 
@@ -385,7 +385,7 @@ The Whisper API supports multiple modes of operation:
    - Returns transcription results directly in the response
    - Simpler client implementation (single HTTP request)
    - Configurable timeout with `SYNC_REQUEST_TIMEOUT_SECONDS`
-   - Use by adding `sync=true` parameter to `/transcribe` requests
+   - Use by adding `sync=true` parameter to `/transcription` requests
 
 ### Job Processing Models
 

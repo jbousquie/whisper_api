@@ -1,149 +1,170 @@
-# Module de métriques de l'API Whisper
+# Whisper API Metrics Module
 
-## Architecture générale du système de métriques
+## General Architecture of the Metrics System
 
-Le système de métriques de l'API Whisper est conçu selon une architecture modulaire qui permet de collecter, traiter et exporter des données de performance vers différents systèmes de monitoring. Le module principal se trouve dans `metrics` et utilise un pattern de traits pour supporter plusieurs backends d'export.
+The Whisper API metrics system is designed with a modular architecture that enables the collection, processing, and export of performance data to various monitoring systems. The main module is located in `metrics` and uses a trait-based pattern to support multiple export backends.
 
-Sont supportés les produits suivants :
+Currently supported products:
 
 - Prometheus
 - StatsD
 - null
 
-En prévision/liste à faire ?
+Planned/TODO list:
 
 - Grafana
-- NewRelic (K8's, complexe, pas de crate, via OpenTelemetry)
+- NewRelic (K8s, complex, no crate, via OpenTelemetry)
 - InfluxDB
-- Graphite (redondant avec statsd)
-- Datadog (nécessite une clef d'API)
+- Graphite (redundant with statsd)
+- Datadog (requires an API key)
 
-## Structure du module de métriques
+## Structure of the Metrics Module
 
-### Module Principal (`metrics.rs`)
+### Main Module (`metrics.rs`)
 
-Le cœur du système est la structure `Metrics` qui implémente le trait `MetricsCollector`. Cette structure :
+The core of the system is the `Metrics` struct which implements the `MetricsCollector` trait. This struct:
 
-1. Collecte des métriques asynchrones : toutes les opérations de métriques sont non-bloquantes grâce à l'utilisation de *tokio*
-2. Thread-safe : utilise `Arc<dyn  MetricsCollector + Send  + Sync>` pour permettre le partage entre threads
-3. Gestion d'erreurs robuste : intègre des validations de sécurité pour éviter les débordements numériques
+1. Collects metrics asynchronously: all metric operations are non-blocking thanks to *tokio*
+2. Is thread-safe: uses `Arc<dyn MetricsCollector + Send + Sync>` to allow sharing between threads
+3. Robust error handling: includes safety validations to avoid numeric overflows
 
-#### Types de métriques supportées
+#### Supported Metric Types
 
-- Compteurs : pour les événements cumulatifs (jobs soumis, complétés, annulés)
-- Jauges : pour les valeurs instantanées (taille de la queue, jobs en cours)
-- Histogrammes : pour les distributions de temps (durée des transcriptions)
+- Counters: for cumulative events (jobs submitted, completed, canceled)
+- Gauges: for instantaneous values (queue size, jobs in progress)
+- Histograms: for time distributions (transcription durations)
 
-#### Intégration avec l'API Whisper
+#### Integration with the Whisper API
 
-Le système de métriques s'intègre à plusieurs niveaux dans l'application :
+The metrics system integrates at several levels within the application:
 
- 1. Dans le gestionnaire de queue (`queue_manager.rs`)
+ 1. In the queue manager (`queue_manager.rs`)
 
-`// Enregistrement de la soumission d'un job
+```rust
+// Recording job submission
 self.metrics.record_job_submitted(&job_model, &job_language).await;
 
-// Mise à jour de la taille de la queue
+// Updating queue size
 self.metrics.set_queue_size(safe_size).await;
 
-// Suivi du nombre de jobs en traitement
+// Tracking the number of jobs in progress
 self.metrics.set_jobs_processing(safe_count).await;
 
-// Enregistrement de la completion d'un job
-metrics.record_job_completed(&job.model, &job.language, duration, "success").await;`
-2. Dans l'application principale (`main.rs`)
+// Recording job completion
+metrics.record_job_completed(&job.model, &job.language, duration, "success").await;
+```
 
-#### Métriques HTTP pour les requêtes API
+1. In the main application (`main.rs`)
 
-- Exposition d'un endpoint `/metrics` pour Prometheus
-- Configuration du backend de métriques selon les variables d'environnement
+- HTTP metrics for API requests
+- Exposing a `/metrics` endpoint for Prometheus
+- Configuring the metrics backend based on environment variables
 
-## Les différents modules d'export
+## Export Modules
 
-### Module Prometheus (`prometheus.rs`)
+### Prometheus Module (`prometheus.rs`)
 
-Le module Prometheus.rs implémente l'export vers le système de monitoring Prometheus.
+The Prometheus module implements exporting to the Prometheus monitoring system:
 
-#### Fonctionnalités
+**Features**:
 
-- Registre de métriques : Utilise `prometheus::Registry` pour organiser toutes les métriques
-- Types de métriques Prometheus :
-- CounterVec : pour les compteurs avec labels (modèle, langue)
-- GaugeVec : pour les jauges avec dimensions
-- HistogramVec : pour les distributions temporelles avec buckets configurables
+- **Metrics Registry**: Uses `prometheus::Registry` to organize all metrics
+- **Prometheus Metric Types**:
+  - `CounterVec`: For counters with labels (model, language)
+  - `GaugeVec`: For gauges with dimensions
+  - `HistogramVec`: For time distributions with configurable buckets
 
-#### Métriques exposées
+**Exposed Metrics**:
 
-- whisper_jobs_submitted_total : nombre total de jobs soumis
-- whisper_jobs_completed_total : nombre total de jobs complétés
-- whisper_queue_size : taille actuelle de la queue
-- whisper_jobs_processing : nombre de jobs en cours de traitement
-- whisper_job_duration_seconds : histogramme des durées de transcription
+- `whisper_jobs_submitted_total`: Total number of submitted jobs
+- `whisper_jobs_completed_total`: Total number of completed jobs
+- `whisper_queue_size`: Current queue size
+- `whisper_jobs_processing`: Number of jobs currently being processed
+- `whisper_job_duration_seconds`: Histogram of transcription durations
 
-#### Configuration
+**Configuration**:
 
-Buckets d'histogramme personnalisables via les variables d'environnement
-Labels automatiques pour le modèle et la langue
-Exposition via endpoint HTTP /metrics
+- Customizable histogram buckets via environment variables
+- Automatic labels for model and language
+- Exposed via HTTP endpoint `/metrics`
 
-### Module StatsD (`statsd.rs`)
+### StatsD Module (`statsd.rs`)
 
-Le module StatsD permet l'envoi de métriques vers des serveurs StatsD compatibles.
+The StatsD module enables sending metrics to compatible StatsD servers:
 
-#### Protocole
+**Protocol**:
 
-- UDP : envoi non-bloquant des métriques via UDP
-- Format StatsD : respect du protocole standard `metric_name:value|type|@sample_rate`
-- Types supportés : c (counter), g (gauge), h (histogram)
+- **UDP**: Non-blocking metrics transmission via UDP
+- **StatsD Format**: Follows the standard protocol `metric_name:value|type|@sample_rate`
+- **Supported Types**: `c` (counter), `g` (gauge), `h` (histogram)
 
-#### Fonctionnalités StatsD
+**Features**:
 
-- Envoi asynchrone : utilise `tokio::net::UdpSocket` pour l'envoi non-bloquant
-- Gestion d'erreurs : logging des erreurs sans interrompre l'application
-- Formatage automatique : conversion des métriques au format StatsD
+- **Asynchronous Transmission**: Uses `tokio::net::UdpSocket` for non-blocking sending
+- **Error Handling**: Logs errors without interrupting the application
+- **Automatic Formatting**: Converts metrics to StatsD format
 
-### Configuration StatsD
+**Configuration**:
 
-Le fichier `STATSD.md` fournit un guide complet d'intégration avec différents backends (Graphite, InfluxDB, DataDog).
+```rust
+// Environment variables
+STATSD_HOST=localhost
+STATSD_PORT=8125
+STATSD_PREFIX=whisper_api
+```
 
-### Module Null (`null.rs`)
+**Detailed Documentation**: The `STATSD.md` file provides a comprehensive guide to integration with different backends (Graphite, InfluxDB, DataDog).
 
-Le module Null implémente un backend "no-op" pour les métriques.
+### Null Module (`null.rs`)
 
-#### Utilité
+The Null module implements a "no-op" backend for metrics:
 
-- Environnements de test : désactive les métriques sans modifier le code
-- Performance : évite la surcharge des métriques en production si non nécessaires
-- Développement : permet de développer sans infrastructure de monitoring
+**Use Cases**:
 
-#### Implémentation
+- **Test Environments**: Disables metrics without modifying code
+- **Performance**: Avoids metrics overhead in production if not necessary
+- **Development**: Allows development without monitoring infrastructure
 
-No op...
-  
-#### Configuration générale et sélection du backend
+**Implementation**:
 
-Le système utilise des variables d'environnement pour sélectionner le backend
+```rust
+impl MetricsCollector for NullMetrics {
+    async fn record_job_submitted(&self, _model: &str, _language: &str) {
+        // No operation - silently ignore
+    }
+    // ... all other methods do nothing
+}
+```
 
-`// Configuration automatique basée sur l'environnement
+## Configuration and Backend Selection
+
+The system uses environment variables to select the backend:
+
+```rust
+// Automatic configuration based on environment
 let metrics = match std::env::var("METRICS_BACKEND").as_deref() {
     Ok("prometheus") => Metrics::new_prometheus(),
     Ok("statsd") => Metrics::new_statsd(),
-    _ => Metrics::new_null(), // Backend par défaut
-};`
+    _ => Metrics::new_null(), // Default backend
+};
+```
 
-1. Avantages du système
-    - Modularité : facilite l'ajout de nouveaux backends de métriques
-    - Performance : opérations asynchrones non-bloquantes
-    - Fiabilité : gestion d'erreurs robuste qui n'impacte pas l'application principale
-    - Flexibilité : support de multiples systèmes de monitoring simultanément
-    - Observabilité : métriques détaillées sur tous les aspects de l'API
+## System Benefits
 
-2. Métriques collectées
+1. **Modularity**: Makes it easy to add new metrics backends
+2. **Performance**: Non-blocking asynchronous operations
+3. **Reliability**: Robust error handling that doesn't impact the main application
+4. **Flexibility**: Support for multiple monitoring systems simultaneously
+5. **Observability**: Detailed metrics on all aspects of the API
 
-Le système surveille en temps réel :
+## Collected Metrics
 
-    - Débit : nombre de jobs soumis, traités, échoués
-    - Latence : temps de traitement par modèle et langue
-    - Charge : taille de la queue, jobs actifs
-    - Qualité : taux de succès, types d'erreurs
-    - Ressources : utilisation selon la configuration de concurrence
+The system monitors in real-time:
+
+- **Throughput**: Number of jobs submitted, processed, failed
+- **Latency**: Processing time by model and language
+- **Load**: Queue size, active jobs
+- **Quality**: Success rate, error types
+- **Resources**: Usage according to concurrency configuration
+
+This architecture enables complete observability of the Whisper API, essential for production monitoring and performance optimization.

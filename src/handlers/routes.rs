@@ -13,9 +13,13 @@ use log::{error, info, warn};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::Mutex;
-
+use std::time::Duration;
+use tokio::sync::{oneshot, Mutex};
+use crate::config::HandlerConfig;
+use crate::error::HandlerError;
+use crate::handlers::form::extract_form_data;
 use crate::models::{StatusResponse, SuccessResponse, TranscriptionResponse};
-use crate::queue_manager::{JobStatus, QueueManager, TranscriptionJob};
+use crate::queue_manager::{JobStatus, QueueManager, TranscriptionJob, TranscriptionResult};
 
 /// Handler for transcription requests
 ///
@@ -23,7 +27,9 @@ use crate::queue_manager::{JobStatus, QueueManager, TranscriptionJob};
 /// creates a transcription job, and adds it to the processing queue.
 /// If HuggingFace token is not provided in the request, it will try to read it from the default file.
 /// If no token is available and diarization is requested, diarization will be disabled.
-#[post("/transcribe")]
+///
+/// When sync=true is specified, the endpoint waits for the transcription to complete before responding.
+#[post("/transcription")]
 pub async fn transcribe(
     form: Multipart,
     queue_manager: web::Data<Arc<Mutex<QueueManager>>>,
@@ -61,9 +67,19 @@ pub async fn transcribe(
         diarize: params.diarize,
         prompt: params.prompt,
         hf_token: params.hf_token,
-        output_format: params.output_format,
+        output_format: params.response_format,
     };
 
+    // Check if synchronous mode is requested
+    if params.sync {
+        info!("Job {} using synchronous mode", job_paths.id);
+        let result =
+            process_sync_job(job.clone(), &queue_manager, config.sync_request_timeout).await?;
+        info!("Synchronous job {} completed", job_paths.id);
+        return Ok(HttpResponse::Ok().json(result));
+    }
+
+    // Standard asynchronous mode processing
     // Add job to queue
     {
         let queue_manager = queue_manager.lock().await;
@@ -89,6 +105,71 @@ pub async fn transcribe(
         .await;
 
     Ok(response)
+}
+
+/// Process a job synchronously, waiting for its completion
+///
+/// This function adds a job to the queue and waits for it to complete,
+/// returning the result directly to the client.
+async fn process_sync_job(
+    job: TranscriptionJob,
+    queue_manager: &web::Data<Arc<Mutex<QueueManager>>>,
+    timeout_seconds: u64,
+) -> Result<TranscriptionResult, HandlerError> {
+    // Add the job to the queue
+    let job_id = job.id.clone();
+    {
+        let queue_manager = queue_manager.lock().await;
+        queue_manager.add_job(job).await?;
+    }
+
+    // Create a channel for notification when job completes
+    let (tx, rx) = oneshot::channel::<TranscriptionResult>();
+
+    // Register the channel for this job
+    {
+        let queue_manager = queue_manager.lock().await;
+        queue_manager.register_sync_channel(&job_id, tx).await?;
+    }
+
+    // Wait for job completion (with timeout)
+    if timeout_seconds > 0 {
+        match tokio::time::timeout(Duration::from_secs(timeout_seconds), rx).await {
+            Ok(result) => {
+                // Job completed successfully
+                // Clean up (same as in result endpoint)
+                if let Err(e) = queue_manager.lock().await.cleanup_job(&job_id).await {
+                    warn!("Failed to clean up synchronized job {}: {}", job_id, e);
+                }
+                return Ok(result?);
+            }
+            Err(_) => {
+                // Timeout
+                // Remove the channel
+                {
+                    let queue_manager = queue_manager.lock().await;
+                    queue_manager.remove_sync_channel(&job_id).await;
+                }
+
+                return Err(HandlerError::SyncTimeout(timeout_seconds));
+            }
+        }
+    } else {
+        // No timeout - wait indefinitely
+        match rx.await {
+            Ok(result) => {
+                // Clean up
+                if let Err(e) = queue_manager.lock().await.cleanup_job(&job_id).await {
+                    warn!("Failed to clean up synchronized job {}: {}", job_id, e);
+                }
+                return Ok(result);
+            }
+            Err(e) => {
+                // Channel error
+                return Err(HandlerError::from(e));
+            }
+        }
+    }
 }
 
 /// Handler for transcription status requests
@@ -120,7 +201,8 @@ pub async fn transcription_status(
 
         (status, position)
     };
-    // Create response with status and optional queue position
+
+  // Create response with status and optional queue position
     let response = StatusResponse {
         status,
         queue_position,

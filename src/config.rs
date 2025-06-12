@@ -22,6 +22,12 @@ pub mod defaults {
 
     // Valid output formats
     pub const VALID_OUTPUT_FORMATS: [&str; 6] = ["srt", "vtt", "txt", "tsv", "json", "aud"];
+    
+    // Default timeout in seconds for synchronous transcription requests
+    pub const SYNC_REQUEST_TIMEOUT_SECONDS: u64 = 1800;
+    
+    // Default processing mode when 'sync' parameter is missing
+    pub const DEFAULT_SYNC_MODE: bool = false;
 }
 
 /// Configuration for the Whisper API handlers
@@ -31,6 +37,10 @@ pub struct HandlerConfig {
     pub temp_dir: String,
     /// Path to HuggingFace token file
     pub hf_token_file: String,
+    /// Timeout in seconds for synchronous transcription requests
+    pub sync_request_timeout: u64,
+    /// Default processing mode (true = synchronous, false = asynchronous)
+    pub default_sync_mode: bool,
 }
 
 impl Default for HandlerConfig {
@@ -40,6 +50,14 @@ impl Default for HandlerConfig {
                 .unwrap_or_else(|_| String::from(defaults::TEMP_DIR)),
             hf_token_file: env::var("WHISPER_HF_TOKEN_FILE")
                 .unwrap_or_else(|_| String::from(defaults::HF_TOKEN_FILE)),
+            sync_request_timeout: env::var("SYNC_REQUEST_TIMEOUT_SECONDS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(defaults::SYNC_REQUEST_TIMEOUT_SECONDS),
+            default_sync_mode: env::var("DEFAULT_SYNC_MODE")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(defaults::DEFAULT_SYNC_MODE),
         }
     }
 }

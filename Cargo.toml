@@ -19,4 +19,5 @@ prometheus = { version = "0.14", features = ["process"] }
 async-trait = "0.1"
 fastrand = "2.0"
 toml = "0.8.23"
-
+num_cpus = "1.17.0"
+lazy_static = "1.4.0"

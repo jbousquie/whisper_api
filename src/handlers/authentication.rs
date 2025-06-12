@@ -45,7 +45,7 @@ where
         if !auth_enabled {
             info!("Authentication requirement is disabled via configuration");
         }
-        
+
         ok(AuthenticationMiddleware { service })
     }
 }
@@ -120,9 +120,14 @@ fn authenticate(req: &ServiceRequest) -> Result<(), Error> {
                 let token = &auth_str[7..]; // Skip "Bearer " prefix
                 debug!("Request received with token: {}", token);
 
+
                 // For now, accept any token (dummy verification)
                 // In a real implementation, this would validate the token
                 return Ok(());
+
+                // Validate the token
+                return validate_token(token);
+
             } else {
                 warn!("Invalid Authorization header format, missing 'Bearer' prefix");
                 return Err(ErrorUnauthorized(
@@ -138,3 +143,13 @@ fn authenticate(req: &ServiceRequest) -> Result<(), Error> {
         return Err(ErrorUnauthorized("Authorization header is required"));
     }
 }
+
+/// Validates a token for authentication
+///
+/// Currently just returns Ok for any token, but can be extended
+/// to implement real token validation in the future.
+fn validate_token(_token: &str) -> Result<(), Error> {
+    // TODO: Implement proper token validation
+    Ok(())
+}
+

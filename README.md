@@ -74,12 +74,15 @@ The application can be configured using the following environment variables:
 | `WHISPER_API_PORT` | Port for the HTTP server | `8181` |
 | `WHISPER_API_TIMEOUT` | Client disconnect timeout in seconds | `480` |
 | `WHISPER_API_KEEPALIVE` | Keep-alive timeout in seconds | `480` |
+| `HTTP_WORKER_NUMBER` | Number of HTTP worker processes (0 = use number of CPU cores) | `0` |
 | `WHISPER_JOB_RETENTION_HOURS` | Number of hours to keep job files before automatic cleanup | `48` |
 | `WHISPER_CLEANUP_INTERVAL_HOURS` | Interval in hours between cleanup runs | `1` |
 | `MAX_FILE_SIZE` | Maximum file size for uploads in bytes | `536870912` (512MB) |
 | `ENABLE_CONCURRENCY` | Enable concurrent job processing | `false` |
 | `MAX_CONCURRENT_JOBS` | Maximum number of concurrent jobs (when enabled) | `6` |
 | `ENABLE_AUTHORIZATION` | Require authentication for all API requests | `true` |
+| `SYNC_REQUEST_TIMEOUT_SECONDS` | Timeout for synchronous transcription requests (0 = no timeout) | `1800` |
+| `DEFAULT_SYNC_MODE` | Default mode when sync parameter is missing (true = sync, false = async) | `false` |
 | `RUST_LOG` | Logging level (error, warn, info, debug, trace) | `info` |
 | `HF_TOKEN` | Hugging Face API token for diarization models access (can alternatively be passed per-request or loaded from file) | None |
 | `WHISPER_HF_TOKEN_FILE` | Path to file containing Hugging Face API token | `/home/llm/whisper_api/hf_token.txt` |
@@ -94,7 +97,7 @@ Authorization: Bearer your_token_here
 
 Requests without a valid Authorization header will be rejected with a 401 Unauthorized response.
 
-Note: Currently, the API uses a dummy verification that accepts any token, but the header must be present and properly formatted.
+Note: Currently, the API uses a dummy verification that accepts any token, but the header must be present and properly formatted. Users can implement their own token validation mechanism by customizing the `validate_token` function in the `authentication.rs` file.
 
 Authentication can be disabled by setting `ENABLE_AUTHORIZATION=false` in the configuration file or environment variables. When disabled, requests will be accepted without any Authorization header.
 
@@ -103,7 +106,7 @@ Authentication can be disabled by setting `ENABLE_AUTHORIZATION=false` in the co
 ### Submit a Transcription Job
 
 ```
-POST /transcribe
+POST /transcription
 ```
 
 **Form Parameters**:
@@ -113,13 +116,29 @@ POST /transcribe
 - `diarize`: Whether to apply speaker diarization (optional, default: true)
 - `prompt`: Initial text prompt for transcription (optional, default: "")
 - `hf_token`: Hugging Face API token for accessing diarization models (optional, if not provided will try to load from `hf_token.txt` file). Required for speaker diarization to work properly.
-- `output_format`: Format of transcription output (optional, values: "srt", "vtt", "txt", "tsv", "json", "aud", default: "txt")
+- `response_format`: Format of transcription output (optional, values: "srt", "vtt", "txt", "tsv", "json", "aud", default: "txt")
+- `sync`: Whether to process the request synchronously (optional, values: "true", "false", default: value of `DEFAULT_SYNC_MODE` configuration)
 
-**Response**:
+**Response (Async Mode - default)**:
 ```json
 {
   "job_id": "uuid-string",
   "status_url": "/transcription/uuid-string"
+}
+```
+
+**Response (Sync Mode - when sync=true)**:
+```json
+{
+  "text": "Transcription text content",
+  "language": "Detected language",
+  "segments": [
+    {
+      "start": 0.0,
+      "end": 2.5,
+      "text": "Segment text"
+    }
+  ]
 }
 ```
 
@@ -200,6 +219,11 @@ WHISPER_API_HOST = "0.0.0.0"
 WHISPER_API_PORT = "9000"
 WHISPER_API_TIMEOUT = 600
 WHISPER_API_KEEPALIVE = 600
+HTTP_WORKER_NUMBER = 4  # Use 4 workers (limited to number of CPU cores)
+
+# API Configuration
+SYNC_REQUEST_TIMEOUT_SECONDS = 1800  # 30 minutes timeout for synchronous requests
+DEFAULT_SYNC_MODE = false            # Default to asynchronous mode when 'sync' parameter is missing
 
 # File Storage Configuration
 WHISPER_TMP_FILES = "/data/whisper/tmp"
@@ -228,15 +252,27 @@ ENABLE_AUTHORIZATION = true
 
 ## Test Commands
 
-### Submit Transcription
+### Submit Transcription (Asynchronous Mode - Default)
 ```bash
-curl -X POST "http://localhost:8181/transcribe" \
+curl -X POST "http://localhost:8181/transcription" \
   -H "Authorization: Bearer your_token_here" \
   -F "language=fr" \
   -F "diarize=true" \
   -F "prompt=Meeting transcript:" \
   -F "hf_token=YOUR_HUGGINGFACE_TOKEN" \
-  -F "output_format=txt" \
+  -F "response_format=txt" \
+  -F "file=@/path/to/audio.wav"
+```
+
+### Submit Transcription (Synchronous Mode)
+```bash
+curl -X POST "http://localhost:8181/transcription" \
+  -H "Authorization: Bearer your_token_here" \
+  -F "language=fr" \
+  -F "diarize=true" \
+  -F "prompt=Meeting transcript:" \
+  -F "hf_token=YOUR_HUGGINGFACE_TOKEN" \
+  -F "sync=true" \
   -F "file=@/path/to/audio.wav"
 ```
 
@@ -250,6 +286,12 @@ Note:
 - The maximum file size is configurable using the `MAX_FILE_SIZE` setting (default: 512 MB).
 - Job processing can be configured for concurrent operation by setting `ENABLE_CONCURRENCY=true` and `MAX_CONCURRENT_JOBS` to the desired number of simultaneous jobs (default: 6).
 - When concurrency is enabled, the queue position reflects the "batch" in which a job will be processed rather than its exact position in the queue.
+- The number of HTTP workers is configurable using the `HTTP_WORKER_NUMBER` setting (0 = use number of CPU cores, >0 = use specified number up to the number of CPU cores).
+- The API supports both synchronous and asynchronous transcription modes:
+  - **Asynchronous Mode** (default): Returns immediately with a job ID and requires polling for status/results
+  - **Synchronous Mode**: Waits for transcription to complete and returns the result directly (use `sync=true` parameter)
+  - Default mode when `sync` parameter is missing is controlled by `DEFAULT_SYNC_MODE` setting (default: false = async)
+  - Timeout for synchronous requests is configurable with `SYNC_REQUEST_TIMEOUT_SECONDS` (default: 1800 seconds, 0 = no timeout)
 
 ### Examples
 
@@ -276,7 +318,7 @@ Example response for a processing job:
 
 #### Disable Speaker Diarization
 ```bash
-curl -X POST "http://localhost:8181/transcribe" \
+curl -X POST "http://localhost:8181/transcription" \
   -H "Authorization: Bearer your_token_here" \
   -F "diarize=false" \
   -F "file=@/path/to/audio.wav"
@@ -284,7 +326,7 @@ curl -X POST "http://localhost:8181/transcribe" \
 
 #### Add Initial Prompt
 ```bash
-curl -X POST "http://localhost:8181/transcribe" \
+curl -X POST "http://localhost:8181/transcription" \
   -H "Authorization: Bearer your_token_here" \
   -F "prompt=This is an interview between John and Sarah:" \
   -F "file=@/path/to/audio.wav"
@@ -292,7 +334,7 @@ curl -X POST "http://localhost:8181/transcribe" \
 
 #### Use Diarization with Hugging Face Token
 ```bash
-curl -X POST "http://localhost:8181/transcribe" \
+curl -X POST "http://localhost:8181/transcription" \
   -H "Authorization: Bearer your_token_here" \
   -F "diarize=true" \
   -F "hf_token=YOUR_HUGGINGFACE_TOKEN" \
@@ -303,9 +345,9 @@ Note: If you don't provide the `hf_token` parameter, the system will attempt to 
 
 #### Specify Output Format
 ```bash
-curl -X POST "http://localhost:8181/transcribe" \
+curl -X POST "http://localhost:8181/transcription" \
   -H "Authorization: Bearer your_token_here" \
-  -F "output_format=srt" \
+  -F "response_format=srt" \
   -F "file=@/path/to/audio.wav"
 ```
 
@@ -326,7 +368,26 @@ The `whisperx.sh` script is responsible for activating the Python virtual enviro
 
 The path to this script can be configured via the `WHISPER_CMD` setting in the configuration file or environment variable.
 
-## Processing Models
+## API and Processing Models
+
+The Whisper API supports multiple modes of operation:
+
+### Request Processing Modes
+
+1. **Asynchronous Mode** (default)
+   - Returns immediately with a job ID
+   - Client must poll for status and retrieve results separately 
+   - Doesn't block HTTP connections during processing
+   - Ideal for long transcriptions or when immediate results aren't needed
+
+2. **Synchronous Mode**
+   - Waits for the transcription to complete before responding
+   - Returns transcription results directly in the response
+   - Simpler client implementation (single HTTP request)
+   - Configurable timeout with `SYNC_REQUEST_TIMEOUT_SECONDS`
+   - Use by adding `sync=true` parameter to `/transcription` requests
+
+### Job Processing Models
 
 The Whisper API supports two processing models that can be configured via the `ENABLE_CONCURRENCY` setting:
 

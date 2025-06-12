@@ -602,6 +602,7 @@ impl Metrics {
     }
 
     /// Record file size
+    #[allow(dead_code)]
     pub async fn record_file_size(&self, size_bytes: f64) {
         self.observe_histogram("file_size_bytes", size_bytes, &[])
             .await;

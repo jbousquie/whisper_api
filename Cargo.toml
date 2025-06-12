@@ -2,6 +2,7 @@
 name = "whisper_api"
 version = "0.1.0"
 edition = "2021"
+license = "CeCILL-B"
 
 [dependencies]
 tokio = { version = "1.45.1", features = ["full"] }

@@ -40,9 +40,7 @@ Le système de métriques s'intègre à plusieurs niveaux dans l'application :
 
  1. Dans le gestionnaire de queue (`queue_manager.rs`)
 
-`
-
-// Enregistrement de la soumission d'un job
+`// Enregistrement de la soumission d'un job
 self.metrics.record_job_submitted(&job_model, &job_language).await;
 
 // Mise à jour de la taille de la queue
@@ -52,8 +50,7 @@ self.metrics.set_queue_size(safe_size).await;
 self.metrics.set_jobs_processing(safe_count).await;
 
 // Enregistrement de la completion d'un job
-metrics.record_job_completed(&job.model, &job.language, duration, "success").await;
-`
+metrics.record_job_completed(&job.model, &job.language, duration, "success").await;`
 2. Dans l'application principale (`main.rs`)
 
 #### Métriques HTTP pour les requêtes API
@@ -127,8 +124,7 @@ No op...
 
 Le système utilise des variables d'environnement pour sélectionner le backend
 
-`
-// Configuration automatique basée sur l'environnement
+`// Configuration automatique basée sur l'environnement
 let metrics = match std::env::var("METRICS_BACKEND").as_deref() {
     Ok("prometheus") => Metrics::new_prometheus(),
     Ok("statsd") => Metrics::new_statsd(),

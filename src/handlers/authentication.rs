@@ -120,14 +120,9 @@ fn authenticate(req: &ServiceRequest) -> Result<(), Error> {
                 let token = &auth_str[7..]; // Skip "Bearer " prefix
                 debug!("Request received with token: {}", token);
 
-
                 // For now, accept any token (dummy verification)
-                // In a real implementation, this would validate the token
-                return Ok(());
-
-                // Validate the token
+                // In a real implementation, this would validate the token using the function below
                 return validate_token(token);
-
             } else {
                 warn!("Invalid Authorization header format, missing 'Bearer' prefix");
                 return Err(ErrorUnauthorized(
@@ -152,4 +147,3 @@ fn validate_token(_token: &str) -> Result<(), Error> {
     // TODO: Implement proper token validation
     Ok(())
 }
-

@@ -6,20 +6,16 @@
 use crate::config::HandlerConfig;
 use crate::error::HandlerError;
 use crate::handlers::form::extract_form_data;
+use crate::models::{StatusResponse, SuccessResponse, TranscriptionResponse};
+use crate::queue_manager::{JobStatus, QueueManager, TranscriptionJob, TranscriptionResult};
 use crate::Metrics;
 use actix_multipart::Multipart;
 use actix_web::{delete, get, post, web, HttpResponse};
 use log::{error, info, warn};
 use std::sync::Arc;
-use std::time::Instant;
-use tokio::sync::Mutex;
 use std::time::Duration;
+use std::time::Instant;
 use tokio::sync::{oneshot, Mutex};
-use crate::config::HandlerConfig;
-use crate::error::HandlerError;
-use crate::handlers::form::extract_form_data;
-use crate::models::{StatusResponse, SuccessResponse, TranscriptionResponse};
-use crate::queue_manager::{JobStatus, QueueManager, TranscriptionJob, TranscriptionResult};
 
 /// Handler for transcription requests
 ///
@@ -202,7 +198,7 @@ pub async fn transcription_status(
         (status, position)
     };
 
-  // Create response with status and optional queue position
+    // Create response with status and optional queue position
     let response = StatusResponse {
         status,
         queue_position,

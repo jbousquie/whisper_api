@@ -1,6 +1,7 @@
 use actix_web::{middleware::Logger, web, App, HttpResponse, HttpServer};
 use env_logger::Env;
 use log::{error, info, warn};
+use std::env;
 
 // Import our modules
 mod config;
@@ -15,21 +16,13 @@ mod queue_manager;
 
 use crate::metrics::metrics::{create_metrics_exporter, Metrics};
 use config::{HandlerConfig, MetricsConfig};
-use config_validator::{WhisperConfigValidator, get_env_or_default};
+use config_validator::WhisperConfigValidator;
 
 // Import the types we need
 use handlers::{
     cancel_transcription, transcribe, transcription_result, transcription_status, Authentication,
 };
-use queue_manager::{QueueManager, WhisperConfig};
-
-const DEFAULT_WHISPER_API_HOST: &str = "127.0.0.1";
-const DEFAULT_WHISPER_API_PORT: &str = "8181";
-
-const DEFAULT_WHISPER_API_TIMEOUT_SECONDS: u64 = 480; // 8 minutes
-const DEFAULT_WHISPER_API_KEEPALIVE_SECONDS: u64 = 480; // 8 minutes
-
-const DEFAULT_HTTP_WORKER_NUMBER: usize = 0; // 0 means use number of CPU cores
+use queue_manager::QueueManager;
 
 /// Metrics endpoint handler
 async fn metrics_handler(metrics: web::Data<Metrics>) -> Result<HttpResponse, actix_web::Error> {
@@ -48,44 +41,59 @@ async fn main() -> std::io::Result<()> {
     // Initialize logger
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
 
+    // Check for command-line arguments for documentation generation
+    let args: Vec<String> = env::args().collect();
+    if args.len() > 1 {
+        match args[1].as_str() {
+            "--generate-config" => {
+                println!("{}", WhisperConfigValidator::generate_sample_config());
+                return Ok(());
+            }
+            "--generate-docs" => {
+                println!("{}", WhisperConfigValidator::generate_config_documentation());
+                return Ok(());
+            }
+            "--help" => {
+                println!("Usage: {} [OPTIONS]", args[0]);
+                println!("Options:");
+                println!("  --generate-config    Generate sample configuration file");
+                println!("  --generate-docs      Generate configuration documentation");
+                println!("  --help              Show this help message");
+                return Ok(());
+            }
+            _ => {
+                eprintln!("Unknown option: {}", args[1]);
+                eprintln!("Use --help for available options");
+                std::process::exit(1);
+            }
+        }
+    }
+
     // Load configuration from file and environment variables
     if config_loader::load_config() {
         info!("Configuration loaded from file");
     } else {
         info!("Using environment variables and defaults (no config file loaded)");
-    }    // Validate all configuration parameters
-    info!("Validating configuration...");
-    let validation_results = WhisperConfigValidator::validate_all();
+    }    // Validate and load all configuration parameters with type safety
+    info!("Validating and loading configuration...");
+    let validated_config = match WhisperConfigValidator::validate_and_load() {
+        Ok(config) => config,
+        Err(_validation_results) => {
+            error!("Configuration validation failed. Please fix the above errors before starting the server.");
+            std::process::exit(1);
+        }
+    };
 
-    // Print validation summary
-    validation_results.print_summary();
-
-    // Exit with error if validation fails
-    if !validation_results.is_valid {
-        error!("Configuration validation failed. Please fix the above errors before starting the server.");
-        std::process::exit(1);
-    }
-
-    // Perform critical validation before server startup
-    info!("Performing critical configuration checks...");
-    let critical_results = WhisperConfigValidator::validate_critical();
-    
-    if !critical_results.is_valid {
+    // Perform critical validation as an additional safety check
+    if let Err(_critical_results) = WhisperConfigValidator::validate_critical() {
         error!("Critical configuration validation failed. Cannot start server.");
-        critical_results.print_summary();
         std::process::exit(1);
     }
 
-    // Continue with warnings but log them
-    if !validation_results.warnings.is_empty() {
-        warn!(
-            "Configuration validation completed with {} warning(s). See above for details.",
-            validation_results.warnings.len()
-        );
-    }// Load configurations
-    let handler_config = HandlerConfig::default();
-    let whisper_config = WhisperConfig::default();
-    let metrics_config = MetricsConfig::default();
+    // Create legacy config structs from validated configuration for compatibility
+    let handler_config = HandlerConfig::from_validated(&validated_config);
+    let whisper_config = queue_manager::WhisperConfig::from_validated(&validated_config);
+    let metrics_config = MetricsConfig::from_validated(&validated_config);
 
     // Log metrics configuration for debugging
     info!("Metrics configuration:");
@@ -102,32 +110,24 @@ async fn main() -> std::io::Result<()> {
         metrics_config.sample_rate,
     )
     .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-    let metrics = Metrics::new(metrics_exporter);
-
-    // Create tmp directory if it doesn't exist
-    let tmp_dir = &handler_config.temp_dir;
+    let metrics = Metrics::new(metrics_exporter);    // Create tmp directory if it doesn't exist
+    let tmp_dir = &validated_config.tmp_dir;
     if let Err(e) = std::fs::create_dir_all(tmp_dir) {
         warn!("Failed to create temp directory {}: {}", tmp_dir, e);
     }
 
     // Initialize the queue manager
-    let command_path = &whisper_config.command_path.clone();
-    let models_dir = whisper_config.models_dir.clone();
-    let queue_manager = QueueManager::new(whisper_config, metrics.clone());    // Server settings
-    let host = get_env_or_default("WHISPER_API_HOST", DEFAULT_WHISPER_API_HOST);
-    let port = get_env_or_default("WHISPER_API_PORT", DEFAULT_WHISPER_API_PORT);    let timeout = std::time::Duration::from_secs(
-        get_env_or_default("WHISPER_API_TIMEOUT", &DEFAULT_WHISPER_API_TIMEOUT_SECONDS.to_string())
-            .parse()
-            .unwrap_or(DEFAULT_WHISPER_API_TIMEOUT_SECONDS),
-    );
-    let keep_alive = std::time::Duration::from_secs(
-        get_env_or_default("WHISPER_API_KEEPALIVE", &DEFAULT_WHISPER_API_KEEPALIVE_SECONDS.to_string())
-            .parse()
-            .unwrap_or(DEFAULT_WHISPER_API_KEEPALIVE_SECONDS),
-    );    // Get the number of workers from configuration (0 = use number of CPU cores)
-    let workers = get_env_or_default("HTTP_WORKER_NUMBER", &DEFAULT_HTTP_WORKER_NUMBER.to_string())
-        .parse::<usize>()
-        .unwrap_or(DEFAULT_HTTP_WORKER_NUMBER);
+    let queue_manager = QueueManager::new(whisper_config, metrics.clone());
+
+    // Use validated configuration for server settings
+    let host = validated_config.host.to_string();
+    let port = validated_config.port.to_string();
+
+    let timeout = std::time::Duration::from_secs(validated_config.timeout as u64);
+    let keep_alive = std::time::Duration::from_secs(validated_config.keepalive as u64);
+
+    // Use validated workers configuration
+    let workers = validated_config.workers;
 
     // Number of available CPU cores
     let num_cpus = num_cpus::get();
@@ -144,13 +144,11 @@ async fn main() -> std::io::Result<()> {
     info!(
         "Using {} HTTP worker(s) (system has {} CPU cores)",
         workers_to_use, num_cpus
-    );
-
-    info!("Starting Whisper API server on http://{}:{}", host, port);
-    info!("Using temp directory: {}", tmp_dir);
-    info!("WhisperX command: {}", command_path);
-    info!("WhisperX models directory: {}", models_dir);
-    info!("Metrics exporter: {}", metrics_config.exporter_type);
+    );    info!("Starting Whisper API server on http://{}:{}", host, port);
+    info!("Using temp directory: {}", validated_config.tmp_dir);
+    info!("WhisperX command: {}", validated_config.whisper_cmd);
+    info!("WhisperX models directory: {}", validated_config.models_dir);
+    info!("Metrics exporter: {}", validated_config.metrics_backend);
 
     HttpServer::new(move || {
         App::new()

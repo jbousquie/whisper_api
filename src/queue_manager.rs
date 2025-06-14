@@ -41,6 +41,7 @@ pub struct WhisperConfig {
     /// Path to the WhisperX command
     pub command_path: String,
     /// Path to the models directory
+    #[allow(dead_code)] // TODO
     pub models_dir: String,
     /// Path to the output directory
     pub output_dir: String,
@@ -49,6 +50,16 @@ pub struct WhisperConfig {
 }
 
 impl WhisperConfig {
+    /// Create WhisperConfig from validated configuration
+    pub fn from_validated(config: &crate::config_validator::WhisperConfig) -> Self {
+        Self {
+            command_path: config.whisper_cmd.clone(),
+            models_dir: config.models_dir.clone(),
+            output_dir: config.output_dir.clone(),
+            output_format: config.output_format.clone(),
+        }
+    }
+
     /// Validates if a given format is in the list of allowed output formats
     pub fn validate_output_format(format: &str) -> Result<(), QueueError> {
         if VALID_OUTPUT_FORMATS.contains(&format) {

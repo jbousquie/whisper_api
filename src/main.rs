@@ -1,10 +1,11 @@
 use actix_web::{middleware::Logger, web, App, HttpResponse, HttpServer};
 use env_logger::Env;
-use log::{info, warn};
+use log::{error, info, warn};
 
 // Import our modules
 mod config;
 mod config_loader;
+mod config_validator;
 mod error;
 mod file_utils;
 mod handlers;
@@ -14,6 +15,7 @@ mod queue_manager;
 
 use crate::metrics::metrics::{create_metrics_exporter, Metrics};
 use config::{HandlerConfig, MetricsConfig};
+use config_validator::{WhisperConfigValidator, get_env_or_default};
 
 // Import the types we need
 use handlers::{
@@ -51,7 +53,36 @@ async fn main() -> std::io::Result<()> {
         info!("Configuration loaded from file");
     } else {
         info!("Using environment variables and defaults (no config file loaded)");
-    }    // Load configurations
+    }    // Validate all configuration parameters
+    info!("Validating configuration...");
+    let validation_results = WhisperConfigValidator::validate_all();
+
+    // Print validation summary
+    validation_results.print_summary();
+
+    // Exit with error if validation fails
+    if !validation_results.is_valid {
+        error!("Configuration validation failed. Please fix the above errors before starting the server.");
+        std::process::exit(1);
+    }
+
+    // Perform critical validation before server startup
+    info!("Performing critical configuration checks...");
+    let critical_results = WhisperConfigValidator::validate_critical();
+    
+    if !critical_results.is_valid {
+        error!("Critical configuration validation failed. Cannot start server.");
+        critical_results.print_summary();
+        std::process::exit(1);
+    }
+
+    // Continue with warnings but log them
+    if !validation_results.warnings.is_empty() {
+        warn!(
+            "Configuration validation completed with {} warning(s). See above for details.",
+            validation_results.warnings.len()
+        );
+    }// Load configurations
     let handler_config = HandlerConfig::default();
     let whisper_config = WhisperConfig::default();
     let metrics_config = MetricsConfig::default();
@@ -69,7 +100,8 @@ async fn main() -> std::io::Result<()> {
         metrics_config.endpoint.as_deref(),
         metrics_config.prefix.as_deref(),
         metrics_config.sample_rate,
-    ).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    )
+    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
     let metrics = Metrics::new(metrics_exporter);
 
     // Create tmp directory if it doesn't exist
@@ -81,31 +113,20 @@ async fn main() -> std::io::Result<()> {
     // Initialize the queue manager
     let command_path = &whisper_config.command_path.clone();
     let models_dir = whisper_config.models_dir.clone();
-    let queue_manager = QueueManager::new(whisper_config, metrics.clone());
-
-    // Server settings
-    let host =
-        std::env::var("WHISPER_API_HOST").unwrap_or_else(|_| DEFAULT_WHISPER_API_HOST.to_string());
-    let port =
-        std::env::var("WHISPER_API_PORT").unwrap_or_else(|_| DEFAULT_WHISPER_API_PORT.to_string());
-
-    let timeout = std::time::Duration::from_secs(
-        std::env::var("WHISPER_API_TIMEOUT")
-            .ok()
-            .and_then(|s| s.parse().ok())
+    let queue_manager = QueueManager::new(whisper_config, metrics.clone());    // Server settings
+    let host = get_env_or_default("WHISPER_API_HOST", DEFAULT_WHISPER_API_HOST);
+    let port = get_env_or_default("WHISPER_API_PORT", DEFAULT_WHISPER_API_PORT);    let timeout = std::time::Duration::from_secs(
+        get_env_or_default("WHISPER_API_TIMEOUT", &DEFAULT_WHISPER_API_TIMEOUT_SECONDS.to_string())
+            .parse()
             .unwrap_or(DEFAULT_WHISPER_API_TIMEOUT_SECONDS),
     );
     let keep_alive = std::time::Duration::from_secs(
-        std::env::var("WHISPER_API_KEEPALIVE")
-            .ok()
-            .and_then(|s| s.parse().ok())
+        get_env_or_default("WHISPER_API_KEEPALIVE", &DEFAULT_WHISPER_API_KEEPALIVE_SECONDS.to_string())
+            .parse()
             .unwrap_or(DEFAULT_WHISPER_API_KEEPALIVE_SECONDS),
-    );
-
-    // Get the number of workers from configuration (0 = use number of CPU cores)
-    let workers = std::env::var("HTTP_WORKER_NUMBER")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
+    );    // Get the number of workers from configuration (0 = use number of CPU cores)
+    let workers = get_env_or_default("HTTP_WORKER_NUMBER", &DEFAULT_HTTP_WORKER_NUMBER.to_string())
+        .parse::<usize>()
         .unwrap_or(DEFAULT_HTTP_WORKER_NUMBER);
 
     // Number of available CPU cores

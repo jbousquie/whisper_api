@@ -51,12 +51,17 @@ async fn main() -> std::io::Result<()> {
         info!("Configuration loaded from file");
     } else {
         info!("Using environment variables and defaults (no config file loaded)");
-    }
-
-    // Load configurations
+    }    // Load configurations
     let handler_config = HandlerConfig::default();
-    let whisper_config = WhisperConfig::default();    // Create metrics config with custom default
+    let whisper_config = WhisperConfig::default();
     let metrics_config = MetricsConfig::default();
+
+    // Log metrics configuration for debugging
+    info!("Metrics configuration:");
+    info!("  Exporter type: {}", metrics_config.exporter_type);
+    info!("  Endpoint: {:?}", metrics_config.endpoint);
+    info!("  Prefix: {:?}", metrics_config.prefix);
+    info!("  Sample rate: {:?}", metrics_config.sample_rate);
 
     // Initialize metrics
     let metrics_exporter = create_metrics_exporter(

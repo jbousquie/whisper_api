@@ -720,7 +720,7 @@ pub fn create_metrics_exporter(
             Ok(Arc::new(PrometheusExporter::new()))
         }
         "statsd" => {
-            let endpoint = endpoint.unwrap_or("localhost:8125");
+            let endpoint = endpoint.unwrap_or("127.0.0.1:8125");
             debug!(
                 "Initializing StatsD metrics exporter with endpoint: {}, prefix: {:?}, sample_rate: {:?}",
                 endpoint, prefix, sample_rate
@@ -732,14 +732,14 @@ pub fn create_metrics_exporter(
             )?;
             Ok(Arc::new(exporter))
         }
-        "none" | "disabled" => {
+        "none" | "null" | "disabled" => {
             debug!("Metrics disabled, using null exporter");
             Ok(Arc::new(NullExporter))
         }
-        _ => Err(MetricsError::configuration_error(format!(
-            "Unknown metrics exporter type '{}'",
-            exporter_type
-        ))),
+        _ => {
+            debug!("Unknown metrics exporter type '{}', using null exporter", exporter_type);
+            Ok(Arc::new(NullExporter))
+        }
     }
 }
 

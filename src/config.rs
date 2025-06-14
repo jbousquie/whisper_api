@@ -106,12 +106,54 @@ pub struct MetricsConfig {
 }
 
 impl Default for MetricsConfig {
-    fn default() -> Self {
+    fn default() -> Self {        // Check if metrics are explicitly disabled via WHISPER_API_METRICS_ENABLED
+        let metrics_enabled = env::var("WHISPER_API_METRICS_ENABLED")
+            .ok()
+            .and_then(|s| s.parse::<bool>().ok())
+            .unwrap_or(true); // Default to enabled
+        
+        // Support multiple environment variable names for maximum compatibility:
+        // 1. WHISPER_API_METRICS_BACKEND (from config file)
+        // 2. METRICS_BACKEND (standard)
+        // 3. METRICS_EXPORTER (legacy)
+        let exporter_type = if !metrics_enabled {
+            "disabled".to_string()
+        } else {
+            env::var("WHISPER_API_METRICS_BACKEND")
+                .or_else(|_| env::var("METRICS_BACKEND"))
+                .or_else(|_| env::var("METRICS_EXPORTER"))
+                .unwrap_or_else(|_| "none".to_string())
+        };
+          // Support both STATSD_ENDPOINT and STATSD_HOST/STATSD_PORT combination
+        let endpoint = env::var("WHISPER_API_METRICS_ENDPOINT")
+            .or_else(|_| env::var("METRICS_ENDPOINT"))
+            .or_else(|_| env::var("STATSD_ENDPOINT"))
+            .or_else(|_| env::var("WHISPER_API_STATSD_ENDPOINT"))
+            .or_else(|_| {
+                // Try to build endpoint from STATSD_HOST and STATSD_PORT
+                let host = env::var("STATSD_HOST")
+                    .or_else(|_| env::var("WHISPER_API_STATSD_HOST"))
+                    .unwrap_or_else(|_| "127.0.0.1".to_string());
+                let port = env::var("STATSD_PORT")
+                    .or_else(|_| env::var("WHISPER_API_STATSD_PORT"))
+                    .unwrap_or_else(|_| "8125".to_string());
+                Ok::<String, env::VarError>(format!("{}:{}", host, port))
+            })
+            .ok();
+        
+        // Support multiple prefix variable names
+        let prefix = env::var("WHISPER_API_METRICS_PREFIX")
+            .or_else(|_| env::var("METRICS_PREFIX"))
+            .or_else(|_| env::var("STATSD_PREFIX"))
+            .ok();
+            
         Self {
-            exporter_type: env::var("METRICS_EXPORTER").unwrap_or_else(|_| "none".to_string()),
-            endpoint: env::var("METRICS_ENDPOINT").ok(),
-            prefix: env::var("METRICS_PREFIX").ok(),
-            sample_rate: env::var("METRICS_SAMPLE_RATE")
+            exporter_type,
+            endpoint,
+            prefix,
+            sample_rate: env::var("WHISPER_API_METRICS_SAMPLE_RATE")
+                .or_else(|_| env::var("METRICS_SAMPLE_RATE"))
+                .or_else(|_| env::var("STATSD_SAMPLE_RATE"))
                 .ok()
                 .and_then(|s| s.parse().ok()),
         }

@@ -3,358 +3,13 @@
 // This module provides comprehensive validation for all configuration parameters
 // and environment variables, ensuring early detection of configuration errors
 // with clear, actionable error messages.
-//
-// The validation system is schema-driven, with a centralized parameter registry
-// that defines validation rules, default values, and constraints for all configuration options.
 
 use std::env;
 use std::net::{IpAddr, SocketAddr};
 use std::path::Path;
 use std::str::FromStr;
-//use std::collections::HashMap;
 
-use log::{error, info, warn};
-
-/// Configuration parameter types
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ConfigType {
-    String,
-    Integer,
-    UnsignedInteger,
-    Boolean,
-    Float,
-    IpAddress,
-    Port,
-    SocketAddress,
-    FilePath,
-    DirectoryPath,
-    Enum(&'static [&'static str]),
-}
-
-/// Validation severity levels
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ValidationLevel {
-    Critical, // Must be valid for application to start
-    Standard, // Important but application can start with defaults
-    Warning,  // Optional, generates warnings only
-}
-
-/// Configuration parameter definition
-#[derive(Debug, Clone)]
-pub struct ConfigParam {
-    pub name: &'static str,
-    pub description: &'static str,
-    pub param_type: ConfigType,
-    pub default_value: Option<&'static str>,
-    pub required: bool,
-    pub validation_level: ValidationLevel,
-    pub min_value: Option<i64>,
-    pub max_value: Option<i64>,
-    pub min_float_value: Option<f64>,
-    pub max_float_value: Option<f64>,
-}
-
-/// Centralized configuration parameter registry
-/// This ensures consistency across the entire project and makes adding new parameters straightforward
-pub const CONFIG_PARAMS: &[ConfigParam] = &[
-    // Server Configuration
-    ConfigParam {
-        name: "WHISPER_API_HOST",
-        description: "Host IP address for the API server",
-        param_type: ConfigType::IpAddress,
-        default_value: Some("127.0.0.1"),
-        required: false,
-        validation_level: ValidationLevel::Critical,
-        min_value: None,
-        max_value: None,
-        min_float_value: None,
-        max_float_value: None,
-    },
-    ConfigParam {
-        name: "WHISPER_API_PORT",
-        description: "Port for the API server",
-        param_type: ConfigType::Port,
-        default_value: Some("8181"),
-        required: false,
-        validation_level: ValidationLevel::Critical,
-        min_value: None,
-        max_value: None,
-        min_float_value: None,
-        max_float_value: None,
-    },
-    ConfigParam {
-        name: "WHISPER_API_TIMEOUT",
-        description: "HTTP request timeout in seconds",
-        param_type: ConfigType::Integer,
-        default_value: Some("480"),
-        required: false,
-        validation_level: ValidationLevel::Standard,
-        min_value: Some(1),
-        max_value: Some(3600),
-        min_float_value: None,
-        max_float_value: None,
-    },
-    ConfigParam {
-        name: "WHISPER_API_KEEPALIVE",
-        description: "Keep-alive timeout in seconds",
-        param_type: ConfigType::Integer,
-        default_value: Some("480"),
-        required: false,
-        validation_level: ValidationLevel::Standard,
-        min_value: Some(1),
-        max_value: Some(3600),
-        min_float_value: None,
-        max_float_value: None,
-    },
-    ConfigParam {
-        name: "HTTP_WORKER_NUMBER",
-        description: "Number of HTTP worker processes (0 = use CPU cores)",
-        param_type: ConfigType::UnsignedInteger,
-        default_value: Some("0"),
-        required: false,
-        validation_level: ValidationLevel::Standard,
-        min_value: Some(0),
-        max_value: Some(64),
-        min_float_value: None,
-        max_float_value: None,
-    },
-    // Metrics Configuration
-    ConfigParam {
-        name: "WHISPER_API_METRICS_ENABLED",
-        description: "Enable metrics collection for the Whisper API",
-        param_type: ConfigType::Boolean,
-        default_value: Some("true"),
-        required: false,
-        validation_level: ValidationLevel::Standard,
-        min_value: None,
-        max_value: None,
-        min_float_value: None,
-        max_float_value: None,
-    },
-    ConfigParam {
-        name: "WHISPER_API_METRICS_BACKEND",
-        description: "Metrics backend type",
-        param_type: ConfigType::Enum(&["prometheus", "statsd", "none", "disabled"]),
-        default_value: Some("none"),
-        required: false,
-        validation_level: ValidationLevel::Standard,
-        min_value: None,
-        max_value: None,
-        min_float_value: None,
-        max_float_value: None,
-    },
-    ConfigParam {
-        name: "WHISPER_API_METRICS_ENDPOINT",
-        description: "Metrics endpoint for StatsD or other backends (host:port)",
-        param_type: ConfigType::SocketAddress,
-        default_value: Some("127.0.0.1:8125"),
-        required: false,
-        validation_level: ValidationLevel::Standard,
-        min_value: None,
-        max_value: None,
-        min_float_value: None,
-        max_float_value: None,
-    },
-    ConfigParam {
-        name: "WHISPER_API_METRICS_PREFIX",
-        description: "Prefix for all exported metrics",
-        param_type: ConfigType::String,
-        default_value: Some("whisper_api"),
-        required: false,
-        validation_level: ValidationLevel::Warning,
-        min_value: None,
-        max_value: None,
-        min_float_value: None,
-        max_float_value: None,
-    },
-    ConfigParam {
-        name: "WHISPER_API_METRICS_SAMPLE_RATE",
-        description: "Sample rate for metrics (0.0-1.0)",
-        param_type: ConfigType::Float,
-        default_value: Some("1.0"),
-        required: false,
-        validation_level: ValidationLevel::Standard,
-        min_value: None,
-        max_value: None,
-        min_float_value: Some(0.0),
-        max_float_value: Some(1.0),
-    },
-    // File Storage Configuration
-    ConfigParam {
-        name: "WHISPER_TMP_FILES",
-        description: "Directory for temporary files",
-        param_type: ConfigType::String, // DirectoryPath validation handled separately
-        default_value: Some("/home/llm/whisper_api/tmp"),
-        required: false,
-        validation_level: ValidationLevel::Standard,
-        min_value: None,
-        max_value: None,
-        min_float_value: None,
-        max_float_value: None,
-    },
-    ConfigParam {
-        name: "WHISPER_HF_TOKEN_FILE",
-        description: "Path to HuggingFace token file for diarization",
-        param_type: ConfigType::String, // FilePath validation handled separately
-        default_value: Some("/home/llm/whisper_api/hf_token.txt"),
-        required: false,
-        validation_level: ValidationLevel::Warning,
-        min_value: None,
-        max_value: None,
-        min_float_value: None,
-        max_float_value: None,
-    },
-    // WhisperX Configuration
-    ConfigParam {
-        name: "WHISPER_CMD",
-        description: "Path to the WhisperX command or wrapper script",
-        param_type: ConfigType::FilePath,
-        default_value: Some("/home/llm/whisper_api/whisperx.sh"),
-        required: true,
-        validation_level: ValidationLevel::Critical,
-        min_value: None,
-        max_value: None,
-        min_float_value: None,
-        max_float_value: None,
-    },
-    ConfigParam {
-        name: "WHISPER_MODELS_DIR",
-        description: "Directory containing WhisperX models",
-        param_type: ConfigType::DirectoryPath,
-        default_value: Some("/home/llm/whisperx/models"),
-        required: true,
-        validation_level: ValidationLevel::Critical,
-        min_value: None,
-        max_value: None,
-        min_float_value: None,
-        max_float_value: None,
-    },
-    ConfigParam {
-        name: "WHISPER_OUTPUT_DIR",
-        description: "Directory for WhisperX output files",
-        param_type: ConfigType::String, // DirectoryPath validation handled separately
-        default_value: Some("/home/llm/whisper_api/output"),
-        required: false,
-        validation_level: ValidationLevel::Standard,
-        min_value: None,
-        max_value: None,
-        min_float_value: None,
-        max_float_value: None,
-    },
-    ConfigParam {
-        name: "WHISPER_OUTPUT_FORMAT",
-        description: "Default output format for transcription",
-        param_type: ConfigType::Enum(&["srt", "vtt", "txt", "tsv", "json", "aud"]),
-        default_value: Some("txt"),
-        required: false,
-        validation_level: ValidationLevel::Standard,
-        min_value: None,
-        max_value: None,
-        min_float_value: None,
-        max_float_value: None,
-    },
-    // Job Management Configuration
-    ConfigParam {
-        name: "WHISPER_JOB_RETENTION_HOURS",
-        description: "Number of hours to retain completed jobs",
-        param_type: ConfigType::Integer,
-        default_value: Some("48"),
-        required: false,
-        validation_level: ValidationLevel::Standard,
-        min_value: Some(1),
-        max_value: Some(8760),
-        min_float_value: None,
-        max_float_value: None,
-    },
-    ConfigParam {
-        name: "WHISPER_CLEANUP_INTERVAL_HOURS",
-        description: "Interval in hours between job cleanup runs",
-        param_type: ConfigType::Integer,
-        default_value: Some("12"),
-        required: false,
-        validation_level: ValidationLevel::Standard,
-        min_value: Some(1),
-        max_value: Some(168),
-        min_float_value: None,
-        max_float_value: None,
-    },
-    // Upload Configuration
-    ConfigParam {
-        name: "MAX_FILE_SIZE",
-        description: "Maximum file size for uploads in bytes",
-        param_type: ConfigType::UnsignedInteger,
-        default_value: Some("536870912"), // 512MB
-        required: false,
-        validation_level: ValidationLevel::Standard,
-        min_value: Some(1024),        // 1KB minimum
-        max_value: Some(10737418240), // 10GB maximum
-        min_float_value: None,
-        max_float_value: None,
-    },
-    // Concurrency Configuration
-    ConfigParam {
-        name: "ENABLE_CONCURRENCY",
-        description: "Enable concurrent job processing",
-        param_type: ConfigType::Boolean,
-        default_value: Some("false"),
-        required: false,
-        validation_level: ValidationLevel::Standard,
-        min_value: None,
-        max_value: None,
-        min_float_value: None,
-        max_float_value: None,
-    },
-    ConfigParam {
-        name: "MAX_CONCURRENT_JOBS",
-        description: "Maximum number of concurrent jobs when concurrency is enabled",
-        param_type: ConfigType::UnsignedInteger,
-        default_value: Some("6"),
-        required: false,
-        validation_level: ValidationLevel::Standard,
-        min_value: Some(1),
-        max_value: Some(32),
-        min_float_value: None,
-        max_float_value: None,
-    },
-    // Security Configuration
-    ConfigParam {
-        name: "ENABLE_AUTHORIZATION",
-        description: "Enable authentication requirement",
-        param_type: ConfigType::Boolean,
-        default_value: Some("true"),
-        required: false,
-        validation_level: ValidationLevel::Critical,
-        min_value: None,
-        max_value: None,
-        min_float_value: None,
-        max_float_value: None,
-    },
-    // API Configuration
-    ConfigParam {
-        name: "SYNC_REQUEST_TIMEOUT_SECONDS",
-        description: "Default timeout in seconds for synchronous transcription requests",
-        param_type: ConfigType::Integer,
-        default_value: Some("1800"),
-        required: false,
-        validation_level: ValidationLevel::Standard,
-        min_value: Some(0),
-        max_value: Some(7200),
-        min_float_value: None,
-        max_float_value: None,
-    },
-    ConfigParam {
-        name: "DEFAULT_SYNC_MODE",
-        description: "Default processing mode when 'sync' parameter is missing",
-        param_type: ConfigType::Boolean,
-        default_value: Some("true"),
-        required: false,
-        validation_level: ValidationLevel::Standard,
-        min_value: None,
-        max_value: None,
-        min_float_value: None,
-        max_float_value: None,
-    },
-];
+use log::{debug, error, info, warn};
 
 /// Configuration validation errors with detailed context
 #[derive(Debug, Clone)]
@@ -367,7 +22,7 @@ pub struct ConfigValidationError {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // Some error types may be used in future validation extensions
+#[allow(dead_code)] // TODO : some error types may be used in future validation extensions
 pub enum ConfigErrorType {
     InvalidValue,
     InvalidFormat,
@@ -424,8 +79,7 @@ impl ValidationResults {
         self.warnings.push(warning);
     }
 
-    // TODO 
-    pub fn _merge(&mut self, other: ValidationResults) {
+    pub fn merge(&mut self, other: ValidationResults) {
         self.errors.extend(other.errors);
         self.warnings.extend(other.warnings);
         if !other.is_valid {
@@ -461,66 +115,6 @@ impl ValidationResults {
                 "Configuration validation passed with {} warning(s)",
                 self.warnings.len()
             );
-        }
-    }
-}
-
-/// Type-safe configuration struct holding validated values
-#[derive(Debug, Clone)]
-pub struct WhisperConfig {
-    pub host: IpAddr,
-    pub port: u16,
-    pub timeout: i64,
-    pub keepalive: i64,
-    pub workers: usize,
-    pub metrics_enabled: bool,
-    pub metrics_backend: String,
-    pub metrics_endpoint: Option<SocketAddr>,
-    pub metrics_prefix: Option<String>,
-    pub metrics_sample_rate: Option<f64>,
-    pub tmp_dir: String,
-    pub hf_token_file: Option<String>,
-    pub whisper_cmd: String,
-    pub models_dir: String,
-    pub output_dir: String,
-    pub output_format: String,
-    pub job_retention_hours: i64,
-    pub cleanup_interval_hours: i64,
-    pub max_file_size: usize,
-    pub enable_concurrency: bool,
-    pub max_concurrent_jobs: usize,
-    pub enable_authorization: bool,
-    pub sync_timeout: i64,
-    pub default_sync_mode: bool,
-}
-
-impl Default for WhisperConfig {
-    fn default() -> Self {
-        Self {
-            host: "127.0.0.1".parse().unwrap(),
-            port: 8181,
-            timeout: 480,
-            keepalive: 480,
-            workers: 0,
-            metrics_enabled: true,
-            metrics_backend: "none".to_string(),
-            metrics_endpoint: None,
-            metrics_prefix: Some("whisper_api".to_string()),
-            metrics_sample_rate: Some(1.0),
-            tmp_dir: "/home/llm/whisper_api/tmp".to_string(),
-            hf_token_file: Some("/home/llm/whisper_api/hf_token.txt".to_string()),
-            whisper_cmd: "/home/llm/whisper_api/whisperx.sh".to_string(),
-            models_dir: "/home/llm/whisperx/models".to_string(),
-            output_dir: "/home/llm/whisper_api/output".to_string(),
-            output_format: "txt".to_string(),
-            job_retention_hours: 48,
-            cleanup_interval_hours: 12,
-            max_file_size: 536870912,
-            enable_concurrency: false,
-            max_concurrent_jobs: 6,
-            enable_authorization: true,
-            sync_timeout: 1800,
-            default_sync_mode: true,
         }
     }
 }
@@ -590,8 +184,8 @@ pub mod validators {
     pub fn validate_usize(
         field: &str,
         value: &str,
-        min: Option<i64>,
-        max: Option<i64>,
+        min: Option<usize>,
+        max: Option<usize>,
     ) -> ValidationResult<usize> {
         let parsed = value.parse::<usize>().map_err(|_| ConfigValidationError {
             field: field.to_string(),
@@ -599,48 +193,6 @@ pub mod validators {
             error_type: ConfigErrorType::InvalidFormat,
             message: "Invalid unsigned integer format".to_string(),
             suggestion: Some("Use a valid positive integer number".to_string()),
-        })?;
-
-        if let Some(min) = min {
-            if (parsed as i64) < min {
-                return Err(ConfigValidationError {
-                    field: field.to_string(),
-                    value: value.to_string(),
-                    error_type: ConfigErrorType::InvalidRange,
-                    message: format!("Value {} is below minimum {}", parsed, min),
-                    suggestion: Some(format!("Use a value >= {}", min)),
-                });
-            }
-        }
-
-        if let Some(max) = max {
-            if (parsed as i64) > max {
-                return Err(ConfigValidationError {
-                    field: field.to_string(),
-                    value: value.to_string(),
-                    error_type: ConfigErrorType::InvalidRange,
-                    message: format!("Value {} is above maximum {}", parsed, max),
-                    suggestion: Some(format!("Use a value <= {}", max)),
-                });
-            }
-        }
-
-        Ok(parsed)
-    }
-
-    /// Validate float values with optional range
-    pub fn validate_float(
-        field: &str,
-        value: &str,
-        min: Option<f64>,
-        max: Option<f64>,
-    ) -> ValidationResult<f64> {
-        let parsed = value.parse::<f64>().map_err(|_| ConfigValidationError {
-            field: field.to_string(),
-            value: value.to_string(),
-            error_type: ConfigErrorType::InvalidFormat,
-            message: "Invalid float format".to_string(),
-            suggestion: Some("Use a valid decimal number".to_string()),
         })?;
 
         if let Some(min) = min {
@@ -748,7 +300,7 @@ pub mod validators {
         })
     }
 
-    /// Validate file path exists and is readable
+    /// Validate file path exists
     pub fn validate_file_exists(field: &str, value: &str) -> ValidationResult<String> {
         let path = Path::new(value);
         if !path.exists() {
@@ -771,21 +323,10 @@ pub mod validators {
             });
         }
 
-        // Check if file is readable
-        if let Err(_) = std::fs::metadata(path) {
-            return Err(ConfigValidationError {
-                field: field.to_string(),
-                value: value.to_string(),
-                error_type: ConfigErrorType::PermissionDenied,
-                message: "File is not readable".to_string(),
-                suggestion: Some("Ensure the file has read permissions".to_string()),
-            });
-        }
-
         Ok(value.to_string())
     }
 
-    /// Validate directory path exists and is writable
+    /// Validate directory path exists
     pub fn validate_directory_exists(field: &str, value: &str) -> ValidationResult<String> {
         let path = Path::new(value);
         if !path.exists() {
@@ -808,29 +349,52 @@ pub mod validators {
             });
         }
 
-        // Check if directory is writable
-        if let Ok(metadata) = std::fs::metadata(path) {
-            if metadata.permissions().readonly() {
-                return Err(ConfigValidationError {
-                    field: field.to_string(),
-                    value: value.to_string(),
-                    error_type: ConfigErrorType::PermissionDenied,
-                    message: "Directory is not writable".to_string(),
-                    suggestion: Some("Ensure the directory has write permissions".to_string()),
-                });
-            }
+        Ok(value.to_string())
+    }
+
+    /// Validate file size in bytes
+    pub fn validate_file_size(field: &str, value: &str) -> ValidationResult<usize> {
+        let size = value.parse::<usize>().map_err(|_| ConfigValidationError {
+            field: field.to_string(),
+            value: value.to_string(),
+            error_type: ConfigErrorType::InvalidFormat,
+            message: "Invalid file size format".to_string(),
+            suggestion: Some("Use a valid number of bytes (e.g., 536870912 for 512MB)".to_string()),
+        })?;
+
+        // Warn if size is very large (> 1GB)
+        if size > 1_073_741_824 {
+            warn!(
+                "Large file size configured for {}: {} bytes ({}MB)",
+                field,
+                size,
+                size / 1_048_576
+            );
         }
 
-        Ok(value.to_string())
+        // Error if size is unreasonably large (> 10GB)
+        if size > 10_737_418_240 {
+            return Err(ConfigValidationError {
+                field: field.to_string(),
+                value: value.to_string(),
+                error_type: ConfigErrorType::InvalidRange,
+                message: "File size is unreasonably large (>10GB)".to_string(),
+                suggestion: Some(
+                    "Consider using a smaller limit to prevent resource exhaustion".to_string(),
+                ),
+            });
+        }
+
+        Ok(size)
     }
 }
 
-/// TODO : helper function to get environment variable or return default
-pub fn _get_env_or_default(key: &str, default: &str) -> String {
+/// Get environment variable value with fallback to default
+pub fn get_env_or_default(key: &str, default: &str) -> String {
     env::var(key).unwrap_or_else(|_| default.to_string())
 }
 
-/// Helper function to get optional environment variable
+/// Get optional environment variable value
 pub fn get_env_optional(key: &str) -> Option<String> {
     env::var(key).ok()
 }
@@ -839,189 +403,346 @@ pub fn get_env_optional(key: &str) -> Option<String> {
 pub struct WhisperConfigValidator;
 
 impl WhisperConfigValidator {
-    /// Validate all configuration parameters and return type-safe configuration struct
-    pub fn validate_and_load() -> Result<WhisperConfig, ValidationResults> {
+    /// Validate all configuration parameters and return comprehensive results
+    pub fn validate_all() -> ValidationResults {
         let mut results = ValidationResults::new();
-        let mut config = WhisperConfig::default();
 
         info!("Starting comprehensive configuration validation...");
 
-        // Validate all parameters using the schema
-        for param in CONFIG_PARAMS {
-            let value = get_env_optional(param.name)
-                .or_else(|| param.default_value.map(String::from))
-                .unwrap_or_default();
+        // Server Configuration
+        results.merge(Self::validate_server_config());
 
-            // Check if required parameter is missing
-            if param.required && value.is_empty() {
-                let error = ConfigValidationError {
-                    field: param.name.to_string(),
-                    value: "".to_string(),
-                    error_type: ConfigErrorType::Required,
-                    message: "Required parameter is missing".to_string(),
-                    suggestion: Some(format!("Set {} environment variable", param.name)),
-                };
-                match param.validation_level {
-                    ValidationLevel::Critical | ValidationLevel::Standard => {
-                        results.add_error(error)
-                    }
-                    ValidationLevel::Warning => results.add_warning(error),
-                }
-                continue;
-            }
+        // Metrics Configuration
+        results.merge(Self::validate_metrics_config());
 
-            // Skip validation if value is empty and not required
-            if value.is_empty() {
-                continue;
-            }
+        // File Storage Configuration
+        results.merge(Self::validate_file_storage_config());
 
-            // Validate parameter and store in config struct
-            match Self::validate_and_store_parameter(param, &value, &mut config) {
-                Ok(_) => {}
-                Err(error) => match param.validation_level {
-                    ValidationLevel::Critical | ValidationLevel::Standard => {
-                        results.add_error(error)
-                    }
-                    ValidationLevel::Warning => results.add_warning(error),
-                },
-            }
-        }
+        // WhisperX Configuration
+        results.merge(Self::validate_whisperx_config());
 
-        // Perform cross-parameter validation
-        Self::validate_cross_dependencies(&mut results, &config);
+        // Job Management Configuration
+        results.merge(Self::validate_job_management_config());
+
+        // Upload Configuration
+        results.merge(Self::validate_upload_config());
+
+        // Concurrency Configuration
+        results.merge(Self::validate_concurrency_config());
+
+        // Security Configuration
+        results.merge(Self::validate_security_config());
+
+        // API Configuration
+        results.merge(Self::validate_api_config());
 
         results.print_summary();
-
-        if results.is_valid {
-            Ok(config)
-        } else {
-            Err(results)
-        }
+        results
     }
 
-    /// Validate a single parameter and store its value in the config struct
-    fn validate_and_store_parameter(
-        param: &ConfigParam,
-        value: &str,
-        config: &mut WhisperConfig,
-    ) -> ValidationResult<()> {
-        match param.param_type {
-            ConfigType::String => {
-                // Store string value directly
-                match param.name {
-                    "WHISPER_TMP_FILES" => config.tmp_dir = value.to_string(),
-                    "WHISPER_HF_TOKEN_FILE" => config.hf_token_file = Some(value.to_string()),
-                    "WHISPER_OUTPUT_DIR" => config.output_dir = value.to_string(),
-                    "WHISPER_API_METRICS_PREFIX" => config.metrics_prefix = Some(value.to_string()),
-                    _ => {} // Other string params handled elsewhere
-                }
+    /// Validate server configuration parameters
+    fn validate_server_config() -> ValidationResults {
+        let mut results = ValidationResults::new();
+        debug!("Validating server configuration...");
+
+        // Validate WHISPER_API_HOST
+        if let Some(host) = get_env_optional("WHISPER_API_HOST") {
+            if let Err(err) = validators::validate_ip_address("WHISPER_API_HOST", &host) {
+                results.add_error(err);
             }
-            ConfigType::Integer => {
-                let parsed = validators::validate_integer(
-                    param.name,
-                    value,
-                    param.min_value,
-                    param.max_value,
-                )?;
-                match param.name {
-                    "WHISPER_API_TIMEOUT" => config.timeout = parsed,
-                    "WHISPER_API_KEEPALIVE" => config.keepalive = parsed,
-                    "WHISPER_JOB_RETENTION_HOURS" => config.job_retention_hours = parsed,
-                    "WHISPER_CLEANUP_INTERVAL_HOURS" => config.cleanup_interval_hours = parsed,
-                    "SYNC_REQUEST_TIMEOUT_SECONDS" => config.sync_timeout = parsed,
-                    _ => {}
-                }
+        }
+
+        // Validate WHISPER_API_PORT
+        if let Some(port) = get_env_optional("WHISPER_API_PORT") {
+            if let Err(err) = validators::validate_port("WHISPER_API_PORT", &port) {
+                results.add_error(err);
             }
-            ConfigType::UnsignedInteger => {
-                let parsed = validators::validate_usize(
-                    param.name,
-                    value,
-                    param.min_value,
-                    param.max_value,
-                )?;
-                match param.name {
-                    "HTTP_WORKER_NUMBER" => config.workers = parsed,
-                    "MAX_FILE_SIZE" => config.max_file_size = parsed,
-                    "MAX_CONCURRENT_JOBS" => config.max_concurrent_jobs = parsed,
-                    _ => {}
-                }
+        }
+
+        // Validate WHISPER_API_TIMEOUT
+        if let Some(timeout) = get_env_optional("WHISPER_API_TIMEOUT") {
+            if let Err(err) =
+                validators::validate_integer("WHISPER_API_TIMEOUT", &timeout, Some(1), Some(3600))
+            {
+                results.add_error(err);
             }
-            ConfigType::Boolean => {
-                let parsed = validators::validate_boolean(param.name, value)?;
-                match param.name {
-                    "WHISPER_API_METRICS_ENABLED" => config.metrics_enabled = parsed,
-                    "ENABLE_CONCURRENCY" => config.enable_concurrency = parsed,
-                    "ENABLE_AUTHORIZATION" => config.enable_authorization = parsed,
-                    "DEFAULT_SYNC_MODE" => config.default_sync_mode = parsed,
-                    _ => {}
-                }
+        }
+
+        // Validate WHISPER_API_KEEPALIVE
+        if let Some(keepalive) = get_env_optional("WHISPER_API_KEEPALIVE") {
+            if let Err(err) = validators::validate_integer(
+                "WHISPER_API_KEEPALIVE",
+                &keepalive,
+                Some(1),
+                Some(3600),
+            ) {
+                results.add_error(err);
             }
-            ConfigType::Float => {
-                let parsed = validators::validate_float(
-                    param.name,
-                    value,
-                    param.min_float_value,
-                    param.max_float_value,
-                )?;
-                match param.name {
-                    "WHISPER_API_METRICS_SAMPLE_RATE" => config.metrics_sample_rate = Some(parsed),
-                    _ => {}
-                }
+        }
+
+        // Validate HTTP_WORKER_NUMBER
+        if let Some(workers) = get_env_optional("HTTP_WORKER_NUMBER") {
+            if let Err(err) =
+                validators::validate_usize("HTTP_WORKER_NUMBER", &workers, Some(0), Some(64))
+            {
+                results.add_error(err);
             }
-            ConfigType::IpAddress => {
-                let parsed = validators::validate_ip_address(param.name, value)?;
-                match param.name {
-                    "WHISPER_API_HOST" => config.host = parsed,
-                    _ => {}
-                }
+        }
+
+        results
+    }
+
+    /// Validate metrics configuration parameters
+    fn validate_metrics_config() -> ValidationResults {
+        let mut results = ValidationResults::new();
+        debug!("Validating metrics configuration...");
+
+        // Validate WHISPER_API_METRICS_ENABLED
+        if let Some(enabled) = get_env_optional("WHISPER_API_METRICS_ENABLED") {
+            if let Err(err) = validators::validate_boolean("WHISPER_API_METRICS_ENABLED", &enabled)
+            {
+                results.add_error(err);
             }
-            ConfigType::Port => {
-                let parsed = validators::validate_port(param.name, value)?;
-                match param.name {
-                    "WHISPER_API_PORT" => config.port = parsed,
-                    _ => {}
-                }
+        }
+
+        // Validate WHISPER_API_METRICS_BACKEND
+        if let Some(backend) = get_env_optional("WHISPER_API_METRICS_BACKEND") {
+            let valid_backends = &["prometheus", "statsd", "none", "disabled"];
+            if let Err(err) = validators::validate_enum(
+                "WHISPER_API_METRICS_BACKEND",
+                &backend,
+                valid_backends,
+                false,
+            ) {
+                results.add_error(err);
             }
-            ConfigType::SocketAddress => {
-                let parsed = validators::validate_socket_address(param.name, value)?;
-                match param.name {
-                    "WHISPER_API_METRICS_ENDPOINT" => config.metrics_endpoint = Some(parsed),
-                    _ => {}
-                }
+        }
+
+        // Validate WHISPER_API_METRICS_ENDPOINT
+        if let Some(endpoint) = get_env_optional("WHISPER_API_METRICS_ENDPOINT") {
+            if let Err(err) =
+                validators::validate_socket_address("WHISPER_API_METRICS_ENDPOINT", &endpoint)
+            {
+                results.add_error(err);
             }
-            ConfigType::FilePath => {
-                let parsed = validators::validate_file_exists(param.name, value)?;
-                match param.name {
-                    "WHISPER_CMD" => config.whisper_cmd = parsed,
-                    _ => {}
-                }
+        }
+
+        // Validate WHISPER_API_METRICS_PREFIX
+        if let Some(prefix) = get_env_optional("WHISPER_API_METRICS_PREFIX") {
+            if prefix.is_empty() {
+                results.add_warning(ConfigValidationError {
+                    field: "WHISPER_API_METRICS_PREFIX".to_string(),
+                    value: prefix,
+                    error_type: ConfigErrorType::InvalidValue,
+                    message: "Empty metrics prefix may cause naming conflicts".to_string(),
+                    suggestion: Some(
+                        "Consider using a descriptive prefix like 'whisper_api'".to_string(),
+                    ),
+                });
             }
-            ConfigType::DirectoryPath => {
-                let parsed = validators::validate_directory_exists(param.name, value)?;
-                match param.name {
-                    "WHISPER_MODELS_DIR" => config.models_dir = parsed,
-                    _ => {}
+        }
+
+        // Validate WHISPER_API_METRICS_SAMPLE_RATE
+        if let Some(rate) = get_env_optional("WHISPER_API_METRICS_SAMPLE_RATE") {
+            match rate.parse::<f64>() {
+                Ok(parsed_rate) => {
+                    if !(0.0..=1.0).contains(&parsed_rate) {
+                        results.add_error(ConfigValidationError {
+                            field: "WHISPER_API_METRICS_SAMPLE_RATE".to_string(),
+                            value: rate,
+                            error_type: ConfigErrorType::InvalidRange,
+                            message: "Sample rate must be between 0.0 and 1.0".to_string(),
+                            suggestion: Some(
+                                "Use a value like 0.1 (10%) or 1.0 (100%)".to_string(),
+                            ),
+                        });
+                    }
                 }
-            }
-            ConfigType::Enum(valid_values) => {
-                let parsed = validators::validate_enum(param.name, value, valid_values, false)?;
-                match param.name {
-                    "WHISPER_API_METRICS_BACKEND" => config.metrics_backend = parsed,
-                    "WHISPER_OUTPUT_FORMAT" => config.output_format = parsed,
-                    _ => {}
+                Err(_) => {
+                    results.add_error(ConfigValidationError {
+                        field: "WHISPER_API_METRICS_SAMPLE_RATE".to_string(),
+                        value: rate,
+                        error_type: ConfigErrorType::InvalidFormat,
+                        message: "Invalid sample rate format".to_string(),
+                        suggestion: Some("Use a decimal number between 0.0 and 1.0".to_string()),
+                    });
                 }
             }
         }
-        Ok(())
+
+        results
     }
 
-    /// Validate cross-parameter dependencies
-    fn validate_cross_dependencies(results: &mut ValidationResults, config: &WhisperConfig) {
-        // Check concurrency configuration consistency
-        if !config.enable_concurrency && config.max_concurrent_jobs > 1 {
+    /// Validate file storage configuration parameters
+    fn validate_file_storage_config() -> ValidationResults {
+        let mut results = ValidationResults::new();
+        debug!("Validating file storage configuration...");
+
+        // Validate WHISPER_TMP_FILES
+        if let Some(tmp_dir) = get_env_optional("WHISPER_TMP_FILES") {
+            // Don't require directory to exist yet, but warn if parent doesn't exist
+            let path = Path::new(&tmp_dir);
+            if let Some(parent) = path.parent() {
+                if !parent.exists() {
+                    results.add_warning(ConfigValidationError {
+                        field: "WHISPER_TMP_FILES".to_string(),
+                        value: tmp_dir.clone(),
+                        error_type: ConfigErrorType::DirectoryNotFound,
+                        message: "Parent directory does not exist".to_string(),
+                        suggestion: Some(
+                            "Ensure parent directories exist or will be created".to_string(),
+                        ),
+                    });
+                }
+            }
+        } // Validate WHISPER_HF_TOKEN_FILE
+        if let Some(token_file) = get_env_optional("WHISPER_HF_TOKEN_FILE") {
+            // Only warn if file doesn't exist (it's optional for diarization)
+            if let Err(mut err) =
+                validators::validate_file_exists("WHISPER_HF_TOKEN_FILE", &token_file)
+            {
+                err.message =
+                    "HuggingFace token file not found (diarization will be disabled)".to_string();
+                err.suggestion =
+                    Some("Create the file with your HF token or disable diarization".to_string());
+                results.add_warning(err);
+            }
+        }
+
+        results
+    }
+
+    /// Validate WhisperX configuration parameters
+    fn validate_whisperx_config() -> ValidationResults {
+        let mut results = ValidationResults::new();
+        debug!("Validating WhisperX configuration..."); // Validate WHISPER_CMD
+        if let Some(cmd) = get_env_optional("WHISPER_CMD") {
+            if let Err(err) = validators::validate_file_exists("WHISPER_CMD", &cmd) {
+                results.add_error(err);
+            }
+        }
+
+        // Validate WHISPER_MODELS_DIR
+        if let Some(models_dir) = get_env_optional("WHISPER_MODELS_DIR") {
+            if let Err(err) =
+                validators::validate_directory_exists("WHISPER_MODELS_DIR", &models_dir)
+            {
+                results.add_error(err);
+            }
+        }
+
+        // Validate WHISPER_OUTPUT_DIR
+        if let Some(output_dir) = get_env_optional("WHISPER_OUTPUT_DIR") {
+            // Don't require directory to exist yet, but warn if parent doesn't exist
+            let path = Path::new(&output_dir);
+            if let Some(parent) = path.parent() {
+                if !parent.exists() {
+                    results.add_warning(ConfigValidationError {
+                        field: "WHISPER_OUTPUT_DIR".to_string(),
+                        value: output_dir.clone(),
+                        error_type: ConfigErrorType::DirectoryNotFound,
+                        message: "Parent directory does not exist".to_string(),
+                        suggestion: Some(
+                            "Ensure parent directories exist or will be created".to_string(),
+                        ),
+                    });
+                }
+            }
+        }
+
+        // Validate WHISPER_OUTPUT_FORMAT
+        if let Some(format) = get_env_optional("WHISPER_OUTPUT_FORMAT") {
+            let valid_formats = &["srt", "vtt", "txt", "tsv", "json", "aud"];
+            if let Err(err) =
+                validators::validate_enum("WHISPER_OUTPUT_FORMAT", &format, valid_formats, false)
+            {
+                results.add_error(err);
+            }
+        }
+
+        results
+    }
+
+    /// Validate job management configuration parameters
+    fn validate_job_management_config() -> ValidationResults {
+        let mut results = ValidationResults::new();
+        debug!("Validating job management configuration...");
+
+        // Validate WHISPER_JOB_RETENTION_HOURS
+        if let Some(retention) = get_env_optional("WHISPER_JOB_RETENTION_HOURS") {
+            if let Err(err) = validators::validate_integer(
+                "WHISPER_JOB_RETENTION_HOURS",
+                &retention,
+                Some(1),
+                Some(8760),
+            ) {
+                results.add_error(err);
+            }
+        }
+
+        // Validate WHISPER_CLEANUP_INTERVAL_HOURS
+        if let Some(interval) = get_env_optional("WHISPER_CLEANUP_INTERVAL_HOURS") {
+            if let Err(err) = validators::validate_integer(
+                "WHISPER_CLEANUP_INTERVAL_HOURS",
+                &interval,
+                Some(1),
+                Some(168),
+            ) {
+                results.add_error(err);
+            }
+        }
+
+        results
+    }
+
+    /// Validate upload configuration parameters
+    fn validate_upload_config() -> ValidationResults {
+        let mut results = ValidationResults::new();
+        debug!("Validating upload configuration...");
+
+        // Validate MAX_FILE_SIZE
+        if let Some(size) = get_env_optional("MAX_FILE_SIZE") {
+            if let Err(err) = validators::validate_file_size("MAX_FILE_SIZE", &size) {
+                results.add_error(err);
+            }
+        }
+
+        results
+    }
+
+    /// Validate concurrency configuration parameters
+    fn validate_concurrency_config() -> ValidationResults {
+        let mut results = ValidationResults::new();
+        debug!("Validating concurrency configuration...");
+
+        // Validate ENABLE_CONCURRENCY
+        if let Some(enabled) = get_env_optional("ENABLE_CONCURRENCY") {
+            if let Err(err) = validators::validate_boolean("ENABLE_CONCURRENCY", &enabled) {
+                results.add_error(err);
+            }
+        }
+
+        // Validate MAX_CONCURRENT_JOBS
+        if let Some(max_jobs) = get_env_optional("MAX_CONCURRENT_JOBS") {
+            if let Err(err) =
+                validators::validate_usize("MAX_CONCURRENT_JOBS", &max_jobs, Some(1), Some(32))
+            {
+                results.add_error(err);
+            }
+        }
+
+        // Cross-validation: warn if concurrency is disabled but max jobs > 1
+        let concurrency_enabled = get_env_optional("ENABLE_CONCURRENCY")
+            .and_then(|s| s.parse::<bool>().ok())
+            .unwrap_or(false);
+        let max_jobs = get_env_optional("MAX_CONCURRENT_JOBS")
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(6);
+
+        if !concurrency_enabled && max_jobs > 1 {
             results.add_warning(ConfigValidationError {
                 field: "MAX_CONCURRENT_JOBS".to_string(),
-                value: config.max_concurrent_jobs.to_string(),
+                value: max_jobs.to_string(),
                 error_type: ConfigErrorType::InvalidValue,
                 message: "MAX_CONCURRENT_JOBS > 1 but ENABLE_CONCURRENCY is false".to_string(),
                 suggestion: Some(
@@ -1030,133 +751,107 @@ impl WhisperConfigValidator {
             });
         }
 
-        // Check metrics configuration consistency
-        if config.metrics_enabled
-            && config.metrics_backend != "none"
-            && config.metrics_backend != "disabled"
-        {
-            if config.metrics_backend == "statsd" && config.metrics_endpoint.is_none() {
-                results.add_error(ConfigValidationError {
-                    field: "WHISPER_API_METRICS_ENDPOINT".to_string(),
-                    value: "".to_string(),
-                    error_type: ConfigErrorType::Required,
-                    message: "Metrics endpoint required when StatsD backend is enabled".to_string(),
-                    suggestion: Some(
-                        "Set WHISPER_API_METRICS_ENDPOINT for StatsD backend".to_string(),
-                    ),
-                });
-            }
-        }
+        results
     }
 
-    /// Quick validation for critical parameters only (fail-fast)
-    pub fn validate_critical() -> Result<(), ValidationResults> {
+    /// Validate security configuration parameters
+    fn validate_security_config() -> ValidationResults {
+        let mut results = ValidationResults::new();
+        debug!("Validating security configuration...");
+
+        // Validate ENABLE_AUTHORIZATION
+        if let Some(enabled) = get_env_optional("ENABLE_AUTHORIZATION") {
+            if let Err(err) = validators::validate_boolean("ENABLE_AUTHORIZATION", &enabled) {
+                results.add_error(err);
+            }
+        }
+
+        results
+    }
+
+    /// Validate API configuration parameters
+    fn validate_api_config() -> ValidationResults {
+        let mut results = ValidationResults::new();
+        debug!("Validating API configuration...");
+
+        // Validate SYNC_REQUEST_TIMEOUT_SECONDS
+        if let Some(timeout) = get_env_optional("SYNC_REQUEST_TIMEOUT_SECONDS") {
+            if let Err(err) = validators::validate_integer(
+                "SYNC_REQUEST_TIMEOUT_SECONDS",
+                &timeout,
+                Some(0),
+                Some(7200),
+            ) {
+                results.add_error(err);
+            }
+        }
+
+        // Validate DEFAULT_SYNC_MODE
+        if let Some(sync_mode) = get_env_optional("DEFAULT_SYNC_MODE") {
+            if let Err(err) = validators::validate_boolean("DEFAULT_SYNC_MODE", &sync_mode) {
+                results.add_error(err);
+            }
+        }
+
+        results
+    }
+
+    /// Quick validation for critical parameters only
+    pub fn validate_critical() -> ValidationResults {
         let mut results = ValidationResults::new();
 
         info!("Running critical configuration validation...");
 
-        for param in CONFIG_PARAMS {
-            if param.validation_level == ValidationLevel::Critical {
-                let value = get_env_optional(param.name)
-                    .or_else(|| param.default_value.map(String::from))
-                    .unwrap_or_default();
+        // Only validate essential parameters that could cause startup failures
+        let critical_checks = [
+            (
+                "WHISPER_API_HOST",
+                Self::validate_host_critical as fn(&str, &str) -> ValidationResult<()>,
+            ),
+            (
+                "WHISPER_API_PORT",
+                Self::validate_port_critical as fn(&str, &str) -> ValidationResult<()>,
+            ),
+            (
+                "WHISPER_API_METRICS_BACKEND",
+                Self::validate_metrics_backend_critical as fn(&str, &str) -> ValidationResult<()>,
+            ),
+            (
+                "WHISPER_CMD",
+                Self::validate_whisper_cmd_critical as fn(&str, &str) -> ValidationResult<()>,
+            ),
+        ];
 
-                if param.required && value.is_empty() {
-                    results.add_error(ConfigValidationError {
-                        field: param.name.to_string(),
-                        value: "".to_string(),
-                        error_type: ConfigErrorType::Required,
-                        message: "Critical required parameter is missing".to_string(),
-                        suggestion: Some(format!("Set {} environment variable", param.name)),
-                    });
-                    continue;
+        for (param_name, validator) in critical_checks.iter() {
+            if let Some(value) = get_env_optional(param_name) {
+                if let Err(err) = validator(param_name, &value) {
+                    results.add_error(err);
                 }
-
-                if !value.is_empty() {
-                    let mut dummy_config = WhisperConfig::default();
-                    if let Err(error) =
-                        Self::validate_and_store_parameter(param, &value, &mut dummy_config)
-                    {
-                        results.add_error(error);
-                    }
-                }
             }
         }
 
-        if results.is_valid {
-            Ok(())
-        } else {
-            results.print_summary();
-            Err(results)
-        }
-    }
-}
-
-/// Documentation and configuration generation utilities
-impl WhisperConfigValidator {
-    /// Generate a sample configuration file with all parameters and descriptions
-    pub fn generate_sample_config() -> String {
-        let mut output = String::new();
-        output.push_str("# Whisper API Configuration File\n");
-        output.push_str("# This file contains all available configuration parameters\n\n");
-
-        let mut current_category = "";
-        for param in CONFIG_PARAMS {
-            // Group parameters by category (based on name prefix)
-            let category = if param.name.starts_with("WHISPER_API_METRICS") {
-                "Metrics Configuration"
-            } else if param.name.starts_with("WHISPER_API") {
-                "Server Configuration"
-            } else if param.name.starts_with("WHISPER_") {
-                "WhisperX Configuration"
-            } else if param.name.starts_with("HTTP_") {
-                "Server Configuration"
-            } else if param.name.starts_with("ENABLE_") || param.name.starts_with("MAX_") {
-                "Processing Configuration"
-            } else if param.name.starts_with("SYNC_") || param.name.starts_with("DEFAULT_") {
-                "API Configuration"
-            } else {
-                "General Configuration"
-            };
-
-            if category != current_category {
-                output.push_str(&format!("\n# ======== {} ========\n", category));
-                current_category = category;
-            }
-
-            output.push_str(&format!("# {}\n", param.description));
-            if param.required {
-                output.push_str("# REQUIRED\n");
-            }
-            output.push_str(&format!(
-                "{} = {}\n\n",
-                param.name,
-                param.default_value.unwrap_or("\"\"")
-            ));
-        }
-        output
+        results
     }
 
-    /// Generate markdown documentation for all configuration parameters
-    pub fn generate_config_documentation() -> String {
-        let mut output = String::new();
-        output.push_str("# Whisper API Configuration Reference\n\n");
-        output.push_str("This document describes all available configuration parameters for the Whisper API.\n\n");
+    // Critical validation helpers
+    fn validate_host_critical(field: &str, value: &str) -> ValidationResult<()> {
+        validators::validate_ip_address(field, value)?;
+        Ok(())
+    }
 
-        output.push_str("| Parameter | Type | Required | Default | Description |\n");
-        output.push_str("|-----------|------|----------|---------|-------------|\n");
+    fn validate_port_critical(field: &str, value: &str) -> ValidationResult<()> {
+        validators::validate_port(field, value)?;
+        Ok(())
+    }
 
-        for param in CONFIG_PARAMS {
-            output.push_str(&format!(
-                "| `{}` | {:?} | {} | `{}` | {} |\n",
-                param.name,
-                param.param_type,
-                if param.required { "Yes" } else { "No" },
-                param.default_value.unwrap_or("none"),
-                param.description
-            ));
-        }
+    fn validate_metrics_backend_critical(field: &str, value: &str) -> ValidationResult<()> {
+        let valid_backends = &["prometheus", "statsd", "none", "disabled"];
+        validators::validate_enum(field, value, valid_backends, false)?;
+        Ok(())
+    }
 
-        output
+    fn validate_whisper_cmd_critical(field: &str, value: &str) -> ValidationResult<()> {
+        validators::validate_file_exists(field, value)?;
+        Ok(())
     }
 }

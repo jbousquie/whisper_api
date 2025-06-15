@@ -63,15 +63,23 @@ impl Default for HandlerConfig {
 }
 
 impl HandlerConfig {
-    /// Create HandlerConfig from validated configuration
-    pub fn from_validated(config: &crate::config_validator::WhisperConfig) -> Self {
-        Self {
-            temp_dir: config.tmp_dir.clone(),
-            hf_token_file: config.hf_token_file.clone().unwrap_or_else(|| String::from(defaults::HF_TOKEN_FILE)),
-            sync_request_timeout: config.sync_timeout as u64,
-            default_sync_mode: config.default_sync_mode,
+    // This function was removed as it's not currently used
+    // If needed in the future, uncomment and use it
+    /*
+    pub fn load_hf_token(&self) -> Option<String> {
+        match std::fs::read_to_string(&self.hf_token_file) {
+            Ok(token) => {
+                let token = token.trim().to_string();
+                if token.is_empty() {
+                    None
+                } else {
+                    Some(token)
+                }
+            }
+            Err(_) => None,
         }
     }
+    */
 
     /// Validates if an output format is supported
     pub fn validate_output_format(format: &str) -> bool {
@@ -148,30 +156,6 @@ impl Default for MetricsConfig {
                 .or_else(|_| env::var("STATSD_SAMPLE_RATE"))
                 .ok()
                 .and_then(|s| s.parse().ok()),
-        }
-    }
-}
-
-impl MetricsConfig {
-    /// Create MetricsConfig from validated configuration
-    pub fn from_validated(config: &crate::config_validator::WhisperConfig) -> Self {
-        let endpoint = if config.metrics_enabled && config.metrics_backend != "none" && config.metrics_backend != "disabled" {
-            config.metrics_endpoint.map(|addr| addr.to_string())
-        } else {
-            None
-        };
-
-        let exporter_type = if config.metrics_enabled {
-            config.metrics_backend.clone()
-        } else {
-            "disabled".to_string()
-        };
-
-        Self {
-            exporter_type,
-            endpoint,
-            prefix: config.metrics_prefix.clone(),
-            sample_rate: config.metrics_sample_rate,
         }
     }
 }

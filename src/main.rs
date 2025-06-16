@@ -1,5 +1,4 @@
-use actix_cors::Cors;
-use actix_web::{http, middleware::Logger, web, App, HttpServer};
+use actix_web::{middleware::Logger, web, App, HttpServer};
 use env_logger::Env;
 use log::{info, warn};
 
@@ -99,31 +98,8 @@ async fn main() -> std::io::Result<()> {
     info!("WhisperX models directory: {}", models_dir);
 
     HttpServer::new(move || {
-        // Create a CORS middleware with more comprehensive configuration
-        let cors = Cors::default()
-            .allowed_origin_fn(|_origin, _req_head| {
-                // You can implement more specific origin checking here if needed
-                // For development, we'll allow any origin
-                true
-            })
-            // Explicitly list the allowed methods
-            .allowed_methods(vec!["GET", "POST", "PUT", "DELETE", "OPTIONS"])
-            // Allow standard and common custom headers
-            .allowed_headers(vec![
-                http::header::AUTHORIZATION,
-                http::header::ACCEPT,
-                http::header::CONTENT_TYPE,
-            ])
-            // Expose headers that might be needed by the client
-            .expose_headers(["Content-Disposition", "Content-Length"])
-            // Allow credentials (cookies, authorization headers)
-            .supports_credentials()
-            // Cache preflight requests for 1 hour
-            .max_age(3600);
-
         App::new()
             .wrap(Logger::default())
-            .wrap(cors) // Add CORS middleware before authentication
             .wrap(Authentication)
             .app_data(web::Data::new(queue_manager.clone()))
             .app_data(web::Data::new(handler_config.clone()))

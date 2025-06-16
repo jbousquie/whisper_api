@@ -6,7 +6,7 @@
 use actix_web::{
     dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform},
     error::ErrorUnauthorized,
-    http::{header, Method},
+    http::header,
     Error,
 };
 use futures::future::{ok, LocalBoxFuture, Ready};
@@ -88,12 +88,6 @@ fn authenticate(req: &ServiceRequest) -> Result<(), Error> {
     // Check if authorization is enabled via configuration
     if !is_authorization_enabled() {
         debug!("Authorization is disabled, allowing request without authentication");
-        return Ok(());
-    }
-
-    // Always allow OPTIONS requests for CORS preflight
-    if req.method() == Method::OPTIONS {
-        debug!("Allowing OPTIONS request without authentication for CORS preflight");
         return Ok(());
     }
 

@@ -416,11 +416,16 @@ impl QueueManager {
         config: &WhisperConfig,
         state: Arc<Mutex<QueueState>>,
     ) -> Result<TranscriptionResult, QueueError> {
+        use log::{debug, warn};
+        use std::fs;
         debug!(
             "Processing job {} (concurrent: {})",
             job.id,
             std::env::var("ENABLE_CONCURRENCY").unwrap_or_else(|_| "false".to_string())
         );
+
+        // Store audio file path for cleanup at the end
+        let audio_file_path = job.audio_file.clone();
 
         // Validate output format if provided
         // This determines the output file format (e.g., srt, vtt, txt, json)
@@ -478,17 +483,48 @@ impl QueueManager {
         // This will be retrieved and used during cleanup to remove the output file
         let output_file_path_clone = output_file_path.clone();
 
-        let output = command
-            .output()
-            .map_err(|e| QueueError::TranscriptionError(format!("Failed to run command: {}", e)))?;
+        let output = command.output().map_err(|e| {
+            // Attempt to clean up audio file on command execution error
+            if let Err(err) = fs::remove_file(&audio_file_path) {
+                warn!(
+                    "Failed to remove audio file {} after error: {}",
+                    audio_file_path.display(),
+                    err
+                );
+            }
+            QueueError::TranscriptionError(format!("Failed to run command: {}", e))
+        })?;
 
         if !output.status.success() {
             let error = String::from_utf8_lossy(&output.stderr).to_string();
+
+            // Attempt to clean up audio file on command failure
+            if let Err(err) = fs::remove_file(&audio_file_path) {
+                warn!(
+                    "Failed to remove audio file {} after error: {}",
+                    audio_file_path.display(),
+                    err
+                );
+            } else {
+                debug!(
+                    "Successfully removed audio file after error: {}",
+                    audio_file_path.display()
+                );
+            }
+
             return Err(QueueError::TranscriptionError(error));
         }
 
         // Read the result from the output file
         let file_content = fs::read_to_string(&output_file_path).map_err(|e| {
+            // Attempt to clean up audio file on read error
+            if let Err(err) = fs::remove_file(&audio_file_path) {
+                warn!(
+                    "Failed to remove audio file {} after error: {}",
+                    audio_file_path.display(),
+                    err
+                );
+            }
             QueueError::TranscriptionError(format!("Failed to read output file: {}", e))
         })?;
 
@@ -498,7 +534,17 @@ impl QueueManager {
         let job_result_path = job
             .folder_path
             .join(format!("transcript.{}", output_format));
-        fs::write(&job_result_path, &file_content).map_err(|e| QueueError::IoError(e))?;
+        fs::write(&job_result_path, &file_content).map_err(|e| {
+            // Attempt to clean up audio file on write error
+            if let Err(err) = fs::remove_file(&audio_file_path) {
+                warn!(
+                    "Failed to remove audio file {} after error: {}",
+                    audio_file_path.display(),
+                    err
+                );
+            }
+            QueueError::IoError(e)
+        })?;
 
         // Update job metadata with output file path for later cleanup
         {
@@ -524,6 +570,21 @@ impl QueueManager {
                     info!("Notified waiting sync request for job {}", job.id);
                 }
             }
+        }
+
+        // Clean up the audio file immediately after processing
+        if let Err(e) = fs::remove_file(&audio_file_path) {
+            warn!(
+                "Failed to remove audio file {}: {}",
+                audio_file_path.display(),
+                e
+            );
+            // Continue without error - don't fail the job just because cleanup failed
+        } else {
+            debug!(
+                "Successfully removed audio file: {}",
+                audio_file_path.display()
+            );
         }
 
         Ok(result)
@@ -828,12 +889,20 @@ impl QueueManager {
                     // Remove the job from the queue if it's there
                     state.queue.retain(|job| job.id != job_id);
 
-                    // Get folder path from job metadata and clone it
-                    let folder_path = if let Some(metadata) = state.job_metadata.get(job_id) {
-                        Some(metadata.folder_path.clone())
-                    } else {
-                        None
-                    };
+                    // Get folder path and audio file path from job metadata and clone them
+                    let (folder_path, audio_file) =
+                        if let Some(metadata) = state.job_metadata.get(job_id) {
+                            // Find the job in the queue to get the audio file path
+                            let audio_file = state
+                                .queue
+                                .iter()
+                                .find(|job| job.id == job_id)
+                                .map(|job| job.audio_file.clone());
+
+                            (Some(metadata.folder_path.clone()), audio_file)
+                        } else {
+                            (None, None)
+                        };
 
                     // Remove job from tracking
                     state.statuses.remove(job_id);
@@ -843,7 +912,21 @@ impl QueueManager {
                     // Drop the lock before filesystem operations
                     drop(state);
 
-                    // Remove job files if we have a path
+                    // Explicitly remove the audio file first if path is available
+                    if let Some(audio_path) = audio_file {
+                        // Try to delete the audio file first
+                        if let Err(e) = fs::remove_file(&audio_path) {
+                            warn!(
+                                "Failed to remove audio file for canceled job {}: {}",
+                                job_id, e
+                            );
+                            // Continue with cancellation even if file removal fails
+                        } else {
+                            debug!("Successfully removed audio file: {}", audio_path.display());
+                        }
+                    }
+
+                    // Remove job directory if we have a path
                     if let Some(path) = folder_path {
                         if let Err(e) = fs::remove_dir_all(&path) {
                             error!("Failed to remove folder for canceled job {}: {}", job_id, e);
@@ -890,6 +973,26 @@ impl QueueManager {
 
             // Try to remove temp folder if we found a folder path
             if let Some(metadata) = metadata {
+                // Try to find the audio file in the job folder (common naming pattern)
+                let audio_file_path = metadata.folder_path.join("audio");
+
+                // Clean up audio file first if it exists
+                if audio_file_path.exists() {
+                    if let Err(e) = fs::remove_file(&audio_file_path) {
+                        warn!(
+                            "Failed to remove audio file {}: {}",
+                            audio_file_path.display(),
+                            e
+                        );
+                        // Continue with cleanup even if file removal fails
+                    } else {
+                        debug!(
+                            "Successfully removed audio file: {}",
+                            audio_file_path.display()
+                        );
+                    }
+                }
+
                 // Clean up temporary folder
                 if let Err(e) = fs::remove_dir_all(&metadata.folder_path) {
                     error!(

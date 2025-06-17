@@ -1,8 +1,10 @@
 use actix_web::{middleware::Logger, web, App, HttpServer};
 use chrono::Local;
 use env_logger::{Builder, Env};
-use log::{info, warn};
+use log::{debug, info, warn};
+use std::fs;
 use std::io::Write;
+use std::path::Path;
 
 // Import our modules
 mod config;
@@ -52,10 +54,63 @@ async fn main() -> std::io::Result<()> {
     let handler_config = HandlerConfig::default();
     let whisper_config = WhisperConfig::default();
 
-    // Create tmp directory if it doesn't exist
+    // Clean tmp directory and recreate it
     let tmp_dir = &handler_config.temp_dir;
-    if let Err(e) = std::fs::create_dir_all(tmp_dir) {
+    info!("Cleaning temporary directory: {}", tmp_dir);
+
+    // Delete existing temporary directory if it exists
+    if Path::new(tmp_dir).exists() {
+        match fs::remove_dir_all(tmp_dir) {
+            Ok(_) => info!("Successfully removed old temporary directory"),
+            Err(e) => warn!("Failed to remove temporary directory {}: {}", tmp_dir, e),
+        }
+    }
+
+    // Create fresh tmp directory
+    if let Err(e) = fs::create_dir_all(tmp_dir) {
         warn!("Failed to create temp directory {}: {}", tmp_dir, e);
+    } else {
+        info!("Created fresh temporary directory: {}", tmp_dir);
+    }
+
+    // Clean WhisperX output directory
+    let output_dir = &whisper_config.output_dir;
+    info!("Cleaning WhisperX output directory: {}", output_dir);
+
+    // Delete existing output files if directory exists
+    if Path::new(output_dir).exists() {
+        match fs::read_dir(output_dir) {
+            Ok(entries) => {
+                for entry in entries.flatten() {
+                    if let Err(e) = fs::remove_file(entry.path()) {
+                        warn!(
+                            "Failed to remove output file {}: {}",
+                            entry.path().display(),
+                            e
+                        );
+                    } else {
+                        debug!("Removed output file: {}", entry.path().display());
+                    }
+                }
+                info!("Successfully cleaned WhisperX output directory");
+            }
+            Err(e) => warn!(
+                "Failed to read WhisperX output directory {}: {}",
+                output_dir, e
+            ),
+        }
+    }
+
+    // Create WhisperX output directory if it doesn't exist
+    if !Path::new(output_dir).exists() {
+        if let Err(e) = fs::create_dir_all(output_dir) {
+            warn!(
+                "Failed to create WhisperX output directory {}: {}",
+                output_dir, e
+            );
+        } else {
+            info!("Created WhisperX output directory: {}", output_dir);
+        }
     }
 
     // Initialize the queue manager

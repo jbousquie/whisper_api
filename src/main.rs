@@ -1,6 +1,8 @@
 use actix_web::{middleware::Logger, web, App, HttpServer};
-use env_logger::Env;
+use chrono::Local;
+use env_logger::{Builder, Env};
 use log::{info, warn};
+use std::io::Write;
 
 // Import our modules
 mod config;
@@ -26,8 +28,18 @@ const DEFAULT_HTTP_WORKER_NUMBER: usize = 0; // 0 means use number of CPU cores
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    // Initialize logger
-    env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
+    // Initialize logger with local timezone
+    Builder::from_env(Env::default().default_filter_or("info"))
+        .format(|buf, record| {
+            writeln!(
+                buf,
+                "{} [{}] - {}",
+                Local::now().format("%Y-%m-%d %H:%M:%S%.3f"),
+                record.level(),
+                record.args()
+            )
+        })
+        .init();
 
     // Load configuration from file and environment variables
     if config_loader::load_config() {

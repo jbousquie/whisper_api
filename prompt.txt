@@ -490,6 +490,8 @@ The codebase follows a modular design pattern with clear separation of concerns:
   - `hf_token`: HuggingFace token for diarization (optional, if not provided will attempt to read from `hf_token.txt` file)
   - `response_format`: Result format (optional, default: "txt")
   - `sync`: Process synchronously and wait for result (optional, default: value of `DEFAULT_SYNC_MODE` configuration)
+  - `device`: Device to use for inference (optional, default: "cuda")
+  - `device_index`: Device index to use for inference (optional, default: 0)
 - **Response (Async Mode)**: Job ID and status URL
 - **Response (Sync Mode)**: Complete transcription result including text and segments
 - **Error Handling**: File size validation, format validation, server errors, authentication failures, timeouts (for sync mode)

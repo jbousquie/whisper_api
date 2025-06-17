@@ -97,7 +97,7 @@ Authorization: Bearer your_token_here
 
 Requests without a valid Authorization header will be rejected with a 401 Unauthorized response.
 
-Note: Currently, the API uses a dummy verification that accepts any token, but the header must be present and properly formatted. Users can implement their own token validation mechanism by customizing the `validate_token` function in the `authentication.rs` file.
+Note: Currently, the API uses a dummy verification that accepts any token, but the header must be present and properly formatted.
 
 Authentication can be disabled by setting `ENABLE_AUTHORIZATION=false` in the configuration file or environment variables. When disabled, requests will be accepted without any Authorization header.
 

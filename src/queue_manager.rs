@@ -4,6 +4,7 @@
 //! requests asynchronously. It processes one job at a time to ensure WhisperX can use all available
 //! physical resources for each transcription job.
 
+use crate::config::defaults;
 use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -32,6 +33,8 @@ const ENV_JOB_RETENTION_HOURS: &str = "WHISPER_JOB_RETENTION_HOURS";
 const ENV_CLEANUP_INTERVAL_HOURS: &str = "WHISPER_CLEANUP_INTERVAL_HOURS";
 const ENV_WHISPER_OUTPUT_DIR: &str = "WHISPER_OUTPUT_DIR";
 const ENV_WHISPER_OUTPUT_FORMAT: &str = "WHISPER_OUTPUT_FORMAT";
+const ENV_WHISPER_DEVICE: &str = "WHISPER_DEVICE";
+const ENV_WHISPER_DEVICE_INDEX: &str = "WHISPER_DEVICE_INDEX";
 
 /// Configuration for the WhisperX command
 #[derive(Clone, Debug)]
@@ -44,6 +47,10 @@ pub struct WhisperConfig {
     pub output_dir: String,
     /// Default output format
     pub output_format: String,
+    /// Device for PyTorch inference (cuda or cpu)
+    pub device: String,
+    /// Device index for inference
+    pub device_index: String,
 }
 
 impl WhisperConfig {
@@ -77,6 +84,10 @@ impl Default for WhisperConfig {
                 output_dir: std::env::var(ENV_WHISPER_OUTPUT_DIR)
                     .unwrap_or_else(|_| String::from(DEFAULT_WHISPER_OUTPUT_DIR)),
                 output_format: DEFAULT_WHISPER_OUTPUT_FORMAT.to_string(),
+                device: std::env::var(ENV_WHISPER_DEVICE)
+                    .unwrap_or_else(|_| String::from(defaults::DEVICE)),
+                device_index: std::env::var(ENV_WHISPER_DEVICE_INDEX)
+                    .unwrap_or_else(|_| String::from(defaults::DEVICE_INDEX)),
             }
         } else {
             Self {
@@ -87,6 +98,10 @@ impl Default for WhisperConfig {
                 output_dir: std::env::var(ENV_WHISPER_OUTPUT_DIR)
                     .unwrap_or_else(|_| String::from(DEFAULT_WHISPER_OUTPUT_DIR)),
                 output_format,
+                device: std::env::var(ENV_WHISPER_DEVICE)
+                    .unwrap_or_else(|_| String::from(defaults::DEVICE)),
+                device_index: std::env::var(ENV_WHISPER_DEVICE_INDEX)
+                    .unwrap_or_else(|_| String::from(defaults::DEVICE_INDEX)),
             }
         }
     }
@@ -132,6 +147,10 @@ pub struct TranscriptionJob {
     pub hf_token: Option<String>,
     /// Output format for transcription results
     pub output_format: Option<String>,
+    /// Device for PyTorch inference (cuda or cpu)
+    pub device: Option<String>,
+    /// Device index for inference when using CUDA
+    pub device_index: Option<String>,
 }
 
 /// Job metadata saved separately from the job itself
@@ -452,6 +471,17 @@ impl QueueManager {
             .arg(&config.output_dir)
             .arg("--output_format")
             .arg(output_format);
+
+        // Add device parameter if provided, otherwise use config default
+        let device = job.device.as_ref().map_or_else(|| &config.device, |d| d);
+        command.arg("--device").arg(device);
+
+        // Add device_index parameter if provided, otherwise use config default
+        let device_index = job
+            .device_index
+            .as_ref()
+            .map_or_else(|| &config.device_index, |d| d);
+        command.arg("--device_index").arg(device_index);
 
         // Add diarization if requested
         if job.diarize {

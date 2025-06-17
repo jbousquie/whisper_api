@@ -49,6 +49,8 @@ pub async fn extract_form_data(
         audio_file: None,
         folder_path: None,
         sync: config.default_sync_mode, // Use configured default sync mode
+        device: None,
+        device_index: None,
     };
 
     let mut job_paths: Option<JobPaths> = None;
@@ -67,7 +69,8 @@ pub async fn extract_form_data(
             .unwrap_or_default();
 
         match field_name.as_str() {
-            "language" | "model" | "prompt" | "hf_token" | "response_format" | "sync" => {
+            "language" | "model" | "prompt" | "hf_token" | "response_format" | "sync"
+            | "device" | "device_index" => {
                 // Read text parameter
                 let mut value = String::new();
                 while let Some(chunk) = field.next().await {
@@ -89,6 +92,8 @@ pub async fn extract_form_data(
                         "model" => params.model = value,
                         "prompt" => params.prompt = value,
                         "hf_token" => params.hf_token = Some(value),
+                        "device" => params.device = Some(value),
+                        "device_index" => params.device_index = Some(value),
                         "response_format" => {
                             // Validate output format
                             if HandlerConfig::validate_output_format(&value) {

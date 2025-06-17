@@ -10,22 +10,28 @@ use std::path::PathBuf;
 pub mod defaults {
     // Temporary directory for file storage
     pub const TEMP_DIR: &str = "/home/llm/whisper_api/tmp";
-    
+
     // Default language for transcription
     pub const LANGUAGE: &str = "fr";
-    
+
     // Default WhisperX model
     pub const MODEL: &str = "large-v3";
-    
+
     // Path to HuggingFace token file
     pub const HF_TOKEN_FILE: &str = "/home/llm/whisper_api/hf_token.txt";
-    
+
     // Valid output formats
     pub const VALID_OUTPUT_FORMATS: [&str; 6] = ["srt", "vtt", "txt", "tsv", "json", "aud"];
-    
+
+    // Default device for PyTorch inference
+    pub const DEVICE: &str = "cuda";
+
+    // Default device index for inference
+    pub const DEVICE_INDEX: &str = "0";
+
     // Default timeout in seconds for synchronous transcription requests
     pub const SYNC_REQUEST_TIMEOUT_SECONDS: u64 = 1800;
-    
+
     // Default processing mode when 'sync' parameter is missing
     pub const DEFAULT_SYNC_MODE: bool = false;
 }
@@ -80,12 +86,12 @@ impl HandlerConfig {
         }
     }
     */
-    
+
     /// Validates if an output format is supported
     pub fn validate_output_format(format: &str) -> bool {
         defaults::VALID_OUTPUT_FORMATS.contains(&format)
     }
-    
+
     /// Ensures the temporary directory exists
     pub fn ensure_temp_dir(&self) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.temp_dir)

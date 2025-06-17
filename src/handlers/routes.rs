@@ -60,6 +60,8 @@ pub async fn transcribe(
         prompt: params.prompt,
         hf_token: params.hf_token,
         output_format: params.response_format,
+        device: params.device,
+        device_index: params.device_index,
     };
 
     // Check if synchronous mode is requested

@@ -43,10 +43,10 @@ WHISPER_OUTPUT_DIR = "/home/llm/whisper_api/output"
 # Default output format (srt, vtt, txt, tsv, json, aud)
 WHISPER_OUTPUT_FORMAT = "txt"
 
-# Device to use for PyTorch inference (cuda or cpu)
+# Device for PyTorch inference (cuda or cpu)
 WHISPER_DEVICE = "cuda"
 
-# Device index to use for inference when using CUDA
+# Device index for FasterWhisper inference
 WHISPER_DEVICE_INDEX = "0"
 
 # ======== Job Management Configuration ========

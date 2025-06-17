@@ -49,6 +49,8 @@ The configuration file uses TOML format and should be placed in the same directo
 WHISPER_API_HOST = "192.168.0.116"
 WHISPER_API_PORT = "8181"
 WHISPER_CMD = "/home/llm/whisper_api/whisperx.sh"
+WHISPER_DEVICE = "cuda"
+WHISPER_DEVICE_INDEX = "0"
 # Additional configuration options...
 ```
 
@@ -69,6 +71,8 @@ The application can be configured using the following environment variables:
 | `WHISPER_MODELS_DIR` | Path to the models directory | `/models` |
 | `WHISPER_OUTPUT_DIR` | Directory for WhisperX to store output files | `/home/llm/whisper_api/output` |
 | `WHISPER_OUTPUT_FORMAT` | Default output format for transcriptions | `txt` |
+| `WHISPER_DEVICE` | Device to use for PyTorch inference (cuda or cpu) | `cuda` |
+| `WHISPER_DEVICE_INDEX` | Device index to use for FasterWhisper inference (used when multiple GPUs are available) | `0` |
 | `WHISPER_TMP_FILES` | Directory for storing temporary files | `/home/llm/whisper_api/tmp` |
 | `WHISPER_API_HOST` | Host address to bind the server | `127.0.0.1` |
 | `WHISPER_API_PORT` | Port for the HTTP server | `8181` |
@@ -117,6 +121,8 @@ POST /transcription
 - `prompt`: Initial text prompt for transcription (optional, default: "")
 - `hf_token`: Hugging Face API token for accessing diarization models (optional, if not provided will try to load from `hf_token.txt` file). Required for speaker diarization to work properly.
 - `response_format`: Format of transcription output (optional, values: "srt", "vtt", "txt", "tsv", "json", "aud", default: "txt")
+- `device`: Device to use for PyTorch inference (optional, values: "cuda", "cpu", default: value of `WHISPER_DEVICE` configuration)
+- `device_index`: Device index for inference when using CUDA (optional, default: value of `WHISPER_DEVICE_INDEX` configuration)
 - `sync`: Whether to process the request synchronously (optional, values: "true", "false", default: value of `DEFAULT_SYNC_MODE` configuration)
 
 **Response (Async Mode - default)**:
@@ -234,6 +240,8 @@ WHISPER_CMD = "/opt/whisper/whisperx.sh"
 WHISPER_MODELS_DIR = "/opt/whisper/models"
 WHISPER_OUTPUT_DIR = "/data/whisper/output"
 WHISPER_OUTPUT_FORMAT = "srt"
+WHISPER_DEVICE = "cuda"
+WHISPER_DEVICE_INDEX = "0"
 
 # Job Management Configuration
 WHISPER_JOB_RETENTION_HOURS = 24
@@ -329,6 +337,23 @@ curl -X POST "http://localhost:8181/transcription" \
 curl -X POST "http://localhost:8181/transcription" \
   -H "Authorization: Bearer your_token_here" \
   -F "prompt=This is an interview between John and Sarah:" \
+  -F "file=@/path/to/audio.wav"
+```
+
+#### Specify Device and Device Index
+```bash
+curl -X POST "http://localhost:8181/transcription" \
+  -H "Authorization: Bearer your_token_here" \
+  -F "device=cuda" \
+  -F "device_index=0" \
+  -F "file=@/path/to/audio.wav"
+```
+
+#### Use CPU Instead of GPU
+```bash
+curl -X POST "http://localhost:8181/transcription" \
+  -H "Authorization: Bearer your_token_here" \
+  -F "device=cpu" \
   -F "file=@/path/to/audio.wav"
 ```
 

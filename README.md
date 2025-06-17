@@ -97,7 +97,7 @@ Authorization: Bearer your_token_here
 
 Requests without a valid Authorization header will be rejected with a 401 Unauthorized response.
 
-Note: Currently, the API uses a dummy verification that accepts any token, but the header must be present and properly formatted.
+Note: Currently, the API uses a dummy verification that accepts any token, but the header must be present and properly formatted. Users can implement their own token validation mechanism by customizing the `validate_token` function in the `authentication.rs` file.
 
 Authentication can be disabled by setting `ENABLE_AUTHORIZATION=false` in the configuration file or environment variables. When disabled, requests will be accepted without any Authorization header.
 
@@ -214,7 +214,7 @@ DELETE /transcription/{job_id}
 A complete `whisper_api.conf` file might look like this:
 
 ```
-# Server Configuration 
+# Server Configuration
 WHISPER_API_HOST = "0.0.0.0"
 WHISPER_API_PORT = "9000"
 WHISPER_API_TIMEOUT = 600
@@ -247,7 +247,7 @@ ENABLE_CONCURRENCY = true
 MAX_CONCURRENT_JOBS = 6
 
 # Security Configuration
-ENABLE_AUTHORIZATION = true
+ENABLE_AUTHORIZATION = false
 ```
 
 ## Test Commands
@@ -282,7 +282,7 @@ curl -X GET "http://localhost:8181/transcription/YOUR_JOB_ID" \
   -H "Authorization: Bearer your_token_here"
 ```
 
-Note: 
+Note:
 - The maximum file size is configurable using the `MAX_FILE_SIZE` setting (default: 512 MB).
 - Job processing can be configured for concurrent operation by setting `ENABLE_CONCURRENCY=true` and `MAX_CONCURRENT_JOBS` to the desired number of simultaneous jobs (default: 6).
 - When concurrency is enabled, the queue position reflects the "batch" in which a job will be processed rather than its exact position in the queue.
@@ -376,7 +376,7 @@ The Whisper API supports multiple modes of operation:
 
 1. **Asynchronous Mode** (default)
    - Returns immediately with a job ID
-   - Client must poll for status and retrieve results separately 
+   - Client must poll for status and retrieve results separately
    - Doesn't block HTTP connections during processing
    - Ideal for long transcriptions or when immediate results aren't needed
 

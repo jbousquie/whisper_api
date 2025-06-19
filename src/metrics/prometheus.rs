@@ -29,65 +29,71 @@ pub struct PrometheusExporter {
     allow_metric_removal: bool,
 }
 
-impl PrometheusExporter {
-    pub fn new() -> Self {
+impl PrometheusExporter {    pub fn new() -> Self {
         let registry = Registry::new();
+        let max_metrics = 1000; // Default limit
+        // Pre-allocate capacity for better performance
+        let capacity = (max_metrics / 3).max(16); // Distribute among 3 maps, minimum 16
         Self {
             registry,
-            counters: DashMap::new(),
-            gauges: DashMap::new(),
-            histograms: DashMap::new(),
-            max_metrics: 1000, // Default limit
+            counters: DashMap::with_capacity(capacity),
+            gauges: DashMap::with_capacity(capacity),
+            histograms: DashMap::with_capacity(capacity),
+            max_metrics,
             namespace: None,
             metric_count: AtomicUsize::new(0),
             allow_metric_removal: true, // Default: allow removal
         }
-    }
-    /// Create a new PrometheusExporter with custom max metrics limit
+    }    /// Create a new PrometheusExporter with custom max metrics limit
     #[allow(dead_code)] // May be used in configuration scenarios
     pub fn with_max_metrics(max_metrics: usize) -> Self {
         let registry = Registry::new();
+        // Pre-allocate capacity for better performance
+        let capacity = (max_metrics / 3).max(16); // Distribute among 3 maps, minimum 16
         Self {
             registry,
-            counters: DashMap::new(),
-            gauges: DashMap::new(),
-            histograms: DashMap::new(),
+            counters: DashMap::with_capacity(capacity),
+            gauges: DashMap::with_capacity(capacity),
+            histograms: DashMap::with_capacity(capacity),
             max_metrics,
             namespace: None,
             metric_count: AtomicUsize::new(0),
             allow_metric_removal: true,
         }
-    }
-    /// Create a new PrometheusExporter with namespace prefix
+    }    /// Create a new PrometheusExporter with namespace prefix
     #[allow(dead_code)] // May be used in configuration scenarios
     pub fn with_namespace<S: Into<String>>(namespace: S) -> Self {
         let namespace = namespace.into();
         // Validate namespace using the same validation as metric names
         validation::validate_metric_name(&namespace).expect("Invalid namespace");
         let registry = Registry::new();
+        let max_metrics = 1000;
+        // Pre-allocate capacity for better performance
+        let capacity = (max_metrics / 3).max(16); // Distribute among 3 maps, minimum 16
         Self {
             registry,
-            counters: DashMap::new(),
-            gauges: DashMap::new(),
-            histograms: DashMap::new(),
-            max_metrics: 1000,
+            counters: DashMap::with_capacity(capacity),
+            gauges: DashMap::with_capacity(capacity),
+            histograms: DashMap::with_capacity(capacity),
+            max_metrics,
             namespace: Some(namespace),
             metric_count: AtomicUsize::new(0),
             allow_metric_removal: true,
         }
-    }
-    /// Create a new PrometheusExporter with both namespace and max metrics
+    }    /// Create a new PrometheusExporter with both namespace and max metrics
     #[allow(dead_code)] // May be used in configuration scenarios
     pub fn with_namespace_and_limits<S: Into<String>>(namespace: S, max_metrics: usize) -> Self {
         let namespace = namespace.into();
         // Validate namespace using the same validation as metric names
         validation::validate_metric_name(&namespace).expect("Invalid namespace");
         let registry = Registry::new();
+        // Pre-allocate capacity for better performance
+        let capacity = (max_metrics / 3).max(16); // Distribute among 3 maps, minimum 16
         Self {
             registry,
-            counters: DashMap::new(),
-            gauges: DashMap::new(),
-            histograms: DashMap::new(),
+            counters: DashMap::with_capacity(capacity),
+            gauges: DashMap::with_capacity(capacity),
+            histograms: DashMap::with_capacity(capacity),
             max_metrics,
             namespace: Some(namespace),
             metric_count: AtomicUsize::new(0),
@@ -126,17 +132,17 @@ impl PrometheusExporter {
             return Err(MetricsError::configuration_error(
                 "PROMETHEUS_MAX_METRICS must be greater than 0",
             ));
-        }
-
-        let allow_metric_removal = std::env::var("PROMETHEUS_ALLOW_REMOVAL")
+        }        let allow_metric_removal = std::env::var("PROMETHEUS_ALLOW_REMOVAL")
             .map(|val| val.to_lowercase() != "false")
             .unwrap_or(true);
         let registry = Registry::new();
+        // Pre-allocate capacity for better performance
+        let capacity = (max_metrics / 3).max(16); // Distribute among 3 maps, minimum 16
         Ok(Self {
             registry,
-            counters: DashMap::new(),
-            gauges: DashMap::new(),
-            histograms: DashMap::new(),
+            counters: DashMap::with_capacity(capacity),
+            gauges: DashMap::with_capacity(capacity),
+            histograms: DashMap::with_capacity(capacity),
             max_metrics,
             namespace,
             metric_count: AtomicUsize::new(0),

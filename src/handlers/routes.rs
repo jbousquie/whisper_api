@@ -6,6 +6,8 @@
 use actix_multipart::Multipart;
 use actix_web::{delete, get, post, web, HttpResponse};
 use log::{error, info, warn};
+use serde::Serialize;
+use std::env;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{oneshot, Mutex};
@@ -157,6 +159,170 @@ async fn process_sync_job(
             }
         }
     }
+}
+
+/// API status endpoint
+///
+/// This endpoint provides information about the API configuration and current queue state,
+/// including server configuration, processing mode, and queue statistics.
+#[get("/status")]
+pub async fn api_status(
+    queue_manager: web::Data<Arc<Mutex<QueueManager>>>,
+) -> Result<HttpResponse, HandlerError> {
+    // Define a struct to hold API status information
+    #[derive(Serialize)]
+    struct ApiStatusResponse {
+        server: ServerConfig,
+        processing: ProcessingConfig,
+        resources: ResourceConfig,
+        security: SecurityConfig,
+        queue_state: Option<QueueState>,
+        error: Option<String>,
+    }
+
+    #[derive(Serialize)]
+    struct ServerConfig {
+        host: String,
+        port: String,
+        timeout: u64,
+        keepalive: u64,
+        worker_number: usize,
+    }
+
+    #[derive(Serialize)]
+    struct ProcessingConfig {
+        concurrent_mode: bool,
+        max_concurrent_jobs: usize,
+        device: String,
+        device_index: String,
+        default_output_format: String,
+        default_sync_mode: bool,
+        sync_timeout: u64,
+    }
+
+    #[derive(Serialize)]
+    struct ResourceConfig {
+        max_file_size: usize,
+        job_retention_hours: u64,
+        cleanup_interval_hours: u64,
+    }
+
+    #[derive(Serialize)]
+    struct SecurityConfig {
+        authorization_enabled: bool,
+    }
+
+    #[derive(Serialize)]
+    struct QueueState {
+        queued_jobs: usize,
+        processing_jobs: usize,
+    }
+
+    // Get server configuration
+    let host = env::var("WHISPER_API_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+    let port = env::var("WHISPER_API_PORT").unwrap_or_else(|_| "8181".to_string());
+    let timeout = env::var("WHISPER_API_TIMEOUT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(480);
+    let keepalive = env::var("WHISPER_API_KEEPALIVE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(480);
+    let worker_number = env::var("HTTP_WORKER_NUMBER")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+
+    // Get processing configuration
+    let concurrent_mode = env::var("ENABLE_CONCURRENCY")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(false);
+    let max_concurrent_jobs = env::var("MAX_CONCURRENT_JOBS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(6);
+    let device = env::var("WHISPER_DEVICE").unwrap_or_else(|_| "cuda".to_string());
+    let device_index = env::var("WHISPER_DEVICE_INDEX").unwrap_or_else(|_| "0".to_string());
+    let default_output_format =
+        env::var("WHISPER_OUTPUT_FORMAT").unwrap_or_else(|_| "txt".to_string());
+    let default_sync_mode = env::var("DEFAULT_SYNC_MODE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(false);
+    let sync_timeout = env::var("SYNC_REQUEST_TIMEOUT_SECONDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1800);
+
+    // Get resource configuration
+    let max_file_size = env::var("MAX_FILE_SIZE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(536870912); // 512MB default
+    let job_retention_hours = env::var("WHISPER_JOB_RETENTION_HOURS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(48);
+    let cleanup_interval_hours = env::var("WHISPER_CLEANUP_INTERVAL_HOURS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
+
+    // Get security configuration
+    let authorization_enabled = env::var("ENABLE_AUTHORIZATION")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(true);
+
+    // Get queue state information
+    let error_message = None;
+
+    // Try to get queue statistics
+    let manager = queue_manager.lock().await;
+
+    // Get queue information
+    let queued_jobs = manager.get_queue_size().await;
+    let processing_jobs = manager.get_processing_count().await;
+
+    // Create queue state info
+    let queue_state = Some(QueueState {
+        queued_jobs,
+        processing_jobs,
+    });
+
+    // Create the response structure
+    let response = ApiStatusResponse {
+        server: ServerConfig {
+            host,
+            port,
+            timeout,
+            keepalive,
+            worker_number,
+        },
+        processing: ProcessingConfig {
+            concurrent_mode,
+            max_concurrent_jobs,
+            device,
+            device_index,
+            default_output_format,
+            default_sync_mode,
+            sync_timeout,
+        },
+        resources: ResourceConfig {
+            max_file_size,
+            job_retention_hours,
+            cleanup_interval_hours,
+        },
+        security: SecurityConfig {
+            authorization_enabled,
+        },
+        queue_state,
+        error: error_message,
+    };
+
+    Ok(HttpResponse::Ok().json(response))
 }
 
 /// Handler for transcription status requests

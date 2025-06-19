@@ -1090,6 +1090,18 @@ impl QueueManager {
     }
 
     /// Clean up a job and its resources
+    /// Get the current size of the job queue (number of queued jobs)
+    pub async fn get_queue_size(&self) -> usize {
+        let state = self.state.lock().await;
+        state.queue.len()
+    }
+
+    /// Get the number of jobs currently being processed
+    pub async fn get_processing_count(&self) -> usize {
+        let state = self.state.lock().await;
+        state.processing_count
+    }
+
     pub async fn cleanup_job(&self, job_id: &str) -> Result<(), QueueError> {
         let mut state = self.state.lock().await;
 

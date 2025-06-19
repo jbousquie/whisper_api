@@ -215,6 +215,57 @@ DELETE /transcription/{job_id}
 }
 ```
 
+### Get API Status
+
+```
+GET /status
+```
+
+**Description**: Returns information about the API configuration and current queue state. This provides a snapshot of how the API is configured and the current job processing status.
+
+**Response**:
+```json
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": "8181",
+    "timeout": 480,
+    "keepalive": 480,
+    "worker_number": 2
+  },
+  "processing": {
+    "concurrent_mode": false,
+    "max_concurrent_jobs": 6,
+    "device": "cuda",
+    "device_index": "0",
+    "default_output_format": "txt",
+    "default_sync_mode": false,
+    "sync_timeout": 1800
+  },
+  "resources": {
+    "max_file_size": 536870912,
+    "job_retention_hours": 48,
+    "cleanup_interval_hours": 12
+  },
+  "security": {
+    "authorization_enabled": false
+  },
+  "queue_state": {
+    "queued_jobs": 2,
+    "processing_jobs": 1
+  },
+  "error": null
+}
+```
+
+**Fields**:
+- `server`: Server configuration details (host, port, timeouts, worker count)
+- `processing`: Processing configuration (sequential/concurrent mode, device settings, formats)
+- `resources`: Resource limits and retention policies
+- `security`: Security settings like authentication requirement
+- `queue_state`: Current number of queued and processing jobs
+- `error`: Any error that occurred when fetching queue state (null if no errors)
+
 ## Configuration Example
 
 A complete `whisper_api.conf` file might look like this:

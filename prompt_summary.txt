@@ -15,6 +15,7 @@ The Whisper API is a high-performance HTTP service built in Rust using Actix-web
 - Support for speaker diarization with HuggingFace token handling
 - Comprehensive job lifecycle management (submission, monitoring, retrieval, cancellation)
 - Multiple output formats (srt, vtt, txt, tsv, json)
+- API status endpoint for configuration visibility and queue monitoring
 - Automatic file cleanup and privacy protection
 - Queue position tracking with intelligent wait time estimation
 - Flexible configuration via TOML file and environment variables
@@ -32,6 +33,7 @@ The Whisper API is a high-performance HTTP service built in Rust using Actix-web
 - `GET /transcription/{job_id}`: Check job status with queue position
 - `GET /transcription/{job_id}/result`: Retrieve completed transcription
 - `DELETE /transcription/{job_id}`: Cancel pending job
+- `GET /status`: Get API configuration and queue statistics
 
 ## Technical Implementation
 - Thread-safe queue management with `Arc<Mutex<>>` and Tokio async runtime
@@ -39,6 +41,7 @@ The Whisper API is a high-performance HTTP service built in Rust using Actix-web
 - Comprehensive error handling with proper HTTP status codes
 - Automatic job expiration and cleanup system
 - Multi-layered file security and privacy protection
+- Real-time configuration visibility and monitoring capabilities
 
 ## Deployment Requirements
 - Rust with Tokio async runtime

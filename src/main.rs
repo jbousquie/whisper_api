@@ -18,7 +18,8 @@ mod queue_manager;
 // Import the types we need
 use config::HandlerConfig;
 use handlers::{
-    cancel_transcription, transcribe, transcription_result, transcription_status, Authentication,
+    api_status, cancel_transcription, transcribe, transcription_result, transcription_status,
+    Authentication,
 };
 use queue_manager::{QueueManager, WhisperConfig};
 
@@ -170,6 +171,7 @@ async fn main() -> std::io::Result<()> {
             .wrap(Authentication)
             .app_data(web::Data::new(queue_manager.clone()))
             .app_data(web::Data::new(handler_config.clone()))
+            .service(api_status)
             .service(transcribe)
             .service(transcription_status)
             .service(transcription_result)

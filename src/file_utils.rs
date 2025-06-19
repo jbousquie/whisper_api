@@ -84,7 +84,6 @@ pub fn cleanup_folder(folder_path: &Path) {
 }
 
 // This function was removed as it's not currently used
-// If needed in the future, uncomment and use it
 /*
 /// Check if a file exists
 ///

@@ -25,9 +25,12 @@ pub struct PrometheusExporter {
     namespace: Option<String>,
     /// Atomic counter for total metrics across all types
     metric_count: AtomicUsize,
+    /// Safety flag to prevent accidental metric removal in production
+    allow_metric_removal: bool,
 }
 
-impl PrometheusExporter {    pub fn new() -> Self {
+impl PrometheusExporter {
+    pub fn new() -> Self {
         let registry = Registry::new();
         Self {
             registry,
@@ -37,8 +40,10 @@ impl PrometheusExporter {    pub fn new() -> Self {
             max_metrics: 1000, // Default limit
             namespace: None,
             metric_count: AtomicUsize::new(0),
+            allow_metric_removal: true, // Default: allow removal
         }
-    }    /// Create a new PrometheusExporter with custom max metrics limit
+    }
+    /// Create a new PrometheusExporter with custom max metrics limit
     #[allow(dead_code)] // May be used in configuration scenarios
     pub fn with_max_metrics(max_metrics: usize) -> Self {
         let registry = Registry::new();
@@ -50,8 +55,10 @@ impl PrometheusExporter {    pub fn new() -> Self {
             max_metrics,
             namespace: None,
             metric_count: AtomicUsize::new(0),
+            allow_metric_removal: true,
         }
-    }    /// Create a new PrometheusExporter with namespace prefix
+    }
+    /// Create a new PrometheusExporter with namespace prefix
     #[allow(dead_code)] // May be used in configuration scenarios
     pub fn with_namespace<S: Into<String>>(namespace: S) -> Self {
         let namespace = namespace.into();
@@ -66,8 +73,10 @@ impl PrometheusExporter {    pub fn new() -> Self {
             max_metrics: 1000,
             namespace: Some(namespace),
             metric_count: AtomicUsize::new(0),
+            allow_metric_removal: true,
         }
-    }    /// Create a new PrometheusExporter with both namespace and max metrics
+    }
+    /// Create a new PrometheusExporter with both namespace and max metrics
     #[allow(dead_code)] // May be used in configuration scenarios
     pub fn with_namespace_and_limits<S: Into<String>>(namespace: S, max_metrics: usize) -> Self {
         let namespace = namespace.into();
@@ -82,6 +91,7 @@ impl PrometheusExporter {    pub fn new() -> Self {
             max_metrics,
             namespace: Some(namespace),
             metric_count: AtomicUsize::new(0),
+            allow_metric_removal: true,
         }
     }
 
@@ -94,21 +104,34 @@ impl PrometheusExporter {    pub fn new() -> Self {
     /// # Examples
     /// ```bash
     /// export PROMETHEUS_NAMESPACE=whisper_api    /// export PROMETHEUS_MAX_METRICS=2000
-    /// ```
-    #[allow(dead_code)]
+    /// ```    #[allow(dead_code)]
     pub fn from_env() -> Result<Self, MetricsError> {
         let namespace = std::env::var("PROMETHEUS_NAMESPACE").ok();
+
+        // Validate namespace if provided
+        if let Some(ns) = &namespace {
+            validation::validate_metric_name(ns).map_err(|e| {
+                MetricsError::configuration_error(format!(
+                    "Invalid PROMETHEUS_NAMESPACE '{}': {}",
+                    ns, e
+                ))
+            })?;
+        }
 
         let max_metrics = std::env::var("PROMETHEUS_MAX_METRICS")
             .ok()
             .and_then(|val| val.parse::<usize>().ok())
             .unwrap_or(1000);
-
         if max_metrics == 0 {
             return Err(MetricsError::configuration_error(
                 "PROMETHEUS_MAX_METRICS must be greater than 0",
             ));
-        }        let registry = Registry::new();
+        }
+
+        let allow_metric_removal = std::env::var("PROMETHEUS_ALLOW_REMOVAL")
+            .map(|val| val.to_lowercase() != "false")
+            .unwrap_or(true);
+        let registry = Registry::new();
         Ok(Self {
             registry,
             counters: DashMap::new(),
@@ -117,6 +140,7 @@ impl PrometheusExporter {    pub fn new() -> Self {
             max_metrics,
             namespace,
             metric_count: AtomicUsize::new(0),
+            allow_metric_removal,
         })
     }
 
@@ -146,7 +170,8 @@ impl PrometheusExporter {    pub fn new() -> Self {
             .join(" ");
 
         format!("{} - {}", readable_name, metric_type)
-    }    fn check_resource_limits(&self) -> Result<(), MetricsError> {
+    }
+    fn check_resource_limits(&self) -> Result<(), MetricsError> {
         let current_count = self.metric_count.load(Ordering::SeqCst);
         if current_count >= self.max_metrics {
             return Err(MetricsError::resource_limit_exceeded(format!(
@@ -187,7 +212,8 @@ impl PrometheusExporter {    pub fn new() -> Self {
                 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 25.0, 50.0, 100.0,
             ]
         }
-    }    async fn get_or_create_counter(
+    }
+    async fn get_or_create_counter(
         &self,
         name: &str,
         help: &str,
@@ -234,7 +260,8 @@ impl PrometheusExporter {    pub fn new() -> Self {
                 }
             }
         }
-    }    async fn get_or_create_gauge(
+    }
+    async fn get_or_create_gauge(
         &self,
         name: &str,
         help: &str,
@@ -281,7 +308,8 @@ impl PrometheusExporter {    pub fn new() -> Self {
                 }
             }
         }
-    }    async fn get_or_create_histogram(
+    }
+    async fn get_or_create_histogram(
         &self,
         name: &str,
         help: &str,
@@ -307,7 +335,8 @@ impl PrometheusExporter {    pub fn new() -> Self {
         // Try to register with Prometheus, handling race conditions
         match self.registry.register(Box::new(histogram.clone())) {
             Ok(_) => {
-                self.histograms.insert(name_with_namespace, histogram.clone());
+                self.histograms
+                    .insert(name_with_namespace, histogram.clone());
                 Ok(histogram)
             }
             Err(e) => {
@@ -330,11 +359,13 @@ impl PrometheusExporter {    pub fn new() -> Self {
                 }
             }
         }
-    }fn extract_label_names_and_values<'a>(
+    }
+    fn extract_label_names_and_values<'a>(
         labels: &'a [(&'a str, &'a str)],
     ) -> Result<(Vec<&'a str>, Vec<&'a str>), MetricsError> {
         let label_names: Vec<&str> = labels.iter().map(|(k, _)| *k).collect();
-        let unique_names: HashSet<&str> = label_names.iter().copied().collect();        if unique_names.len() != label_names.len() {
+        let unique_names: HashSet<&str> = label_names.iter().copied().collect();
+        if unique_names.len() != label_names.len() {
             return Err(MetricsError::invalid_label(
                 "labels",
                 "Duplicate label names detected",
@@ -342,10 +373,18 @@ impl PrometheusExporter {    pub fn new() -> Self {
         }
         let label_values: Vec<&str> = labels.iter().map(|(_, v)| *v).collect();
         Ok((label_names, label_values))
-    }    /// Remove a counter metric. Use with caution, as removing metrics can disrupt Prometheus time-series data.
+    }
+    /// Remove a counter metric. Use with caution, as removing metrics can disrupt Prometheus time-series data.
     #[allow(dead_code)] // May be used for cleanup scenarios
     pub async fn remove_counter(&self, name: &str) -> Result<(), MetricsError> {
         validation::validate_metric_name(name)?;
+
+        // Check if metric removal is allowed
+        if !self.allow_metric_removal {
+            return Err(MetricsError::configuration_error(
+                "Metric removal is disabled for safety. Use set_allow_metric_removal(true) to enable."
+            ));
+        }
 
         let name_with_namespace = self.apply_namespace(name);
 
@@ -357,13 +396,23 @@ impl PrometheusExporter {    pub fn new() -> Self {
                     name, e
                 )));
             }
+            // Decrement the atomic counter to reflect actual metric count
+            self.metric_count.fetch_sub(1, Ordering::SeqCst);
             debug!("Removed counter metric: {}", name);
         }
         Ok(())
-    }    /// Remove a gauge metric. Use with caution, as removing metrics can disrupt Prometheus time-series data.
+    }
+    /// Remove a gauge metric. Use with caution, as removing metrics can disrupt Prometheus time-series data.
     #[allow(dead_code)] // May be used for cleanup scenarios
     pub async fn remove_gauge(&self, name: &str) -> Result<(), MetricsError> {
         validation::validate_metric_name(name)?;
+
+        // Check if metric removal is allowed
+        if !self.allow_metric_removal {
+            return Err(MetricsError::configuration_error(
+                "Metric removal is disabled for safety. Use set_allow_metric_removal(true) to enable."
+            ));
+        }
 
         let name_with_namespace = self.apply_namespace(name);
 
@@ -375,13 +424,23 @@ impl PrometheusExporter {    pub fn new() -> Self {
                     name, e
                 )));
             }
+            // Decrement the atomic counter to reflect actual metric count
+            self.metric_count.fetch_sub(1, Ordering::SeqCst);
             debug!("Removed gauge metric: {}", name);
         }
         Ok(())
-    }    /// Remove a histogram metric. Use with caution, as removing metrics can disrupt Prometheus time-series data.
+    }
+    /// Remove a histogram metric. Use with caution, as removing metrics can disrupt Prometheus time-series data.
     #[allow(dead_code)] // May be used for cleanup scenarios
     pub async fn remove_histogram(&self, name: &str) -> Result<(), MetricsError> {
         validation::validate_metric_name(name)?;
+
+        // Check if metric removal is allowed
+        if !self.allow_metric_removal {
+            return Err(MetricsError::configuration_error(
+                "Metric removal is disabled for safety. Use set_allow_metric_removal(true) to enable."
+            ));
+        }
 
         let name_with_namespace = self.apply_namespace(name);
 
@@ -393,10 +452,17 @@ impl PrometheusExporter {    pub fn new() -> Self {
                     name, e
                 )));
             }
+            // Decrement the atomic counter to reflect actual metric count
+            self.metric_count.fetch_sub(1, Ordering::SeqCst);
             debug!("Removed histogram metric: {}", name);
         }
         Ok(())
-    }    /// Remove all metrics (cleanup method)
+    }
+    /// Remove all metrics (cleanup method)
+    ///
+    /// WARNING: This creates a new Registry instance, which means any external references
+    /// to the old registry (e.g., for HTTP endpoints) will become stale. This method is
+    /// primarily intended for shutdown/cleanup scenarios or testing.
     #[allow(dead_code)] // May be used for cleanup scenarios
     pub async fn clear_all_metrics(&self) -> Result<(), MetricsError> {
         // Clear all internal collections
@@ -407,15 +473,49 @@ impl PrometheusExporter {    pub fn new() -> Self {
         // Reset the metric count
         self.metric_count.store(0, Ordering::SeqCst);
 
-        // Note: Prometheus Registry doesn't have a clear_all method
-        // So we create a new registry for complete cleanup
+        // Note: We cannot replace the Registry field since it's not behind Arc/Mutex
+        // In practice, this method should be used at shutdown or in controlled scenarios
+        // where registry recreation is acceptable
         debug!("Cleared all metrics from PrometheusExporter");
         Ok(())
+    }
+
+    /// Get a reference to the internal registry for HTTP endpoint setup
+    ///
+    /// This is useful for setting up Prometheus HTTP endpoints that need
+    /// access to the registry for scraping metrics.
+    #[allow(dead_code)]
+    pub fn registry(&self) -> &Registry {
+        &self.registry
+    }
+
+    /// Enable or disable metric removal safeguard
+    ///
+    /// When disabled, remove_* methods will return an error instead of removing metrics.
+    /// This helps prevent accidental metric removal in production environments.
+    #[allow(dead_code)]
+    pub fn set_allow_metric_removal(&mut self, allow: bool) {
+        self.allow_metric_removal = allow;
+    }
+
+    /// Check if metric removal is currently allowed
+    #[allow(dead_code)]
+    pub fn is_metric_removal_allowed(&self) -> bool {
+        self.allow_metric_removal
+    }
+
+    /// Get current metric count
+    ///
+    /// Returns the total number of metrics currently registered
+    #[allow(dead_code)]
+    pub fn metric_count(&self) -> usize {
+        self.metric_count.load(Ordering::SeqCst)
     }
 }
 
 #[async_trait]
-impl MetricsExporter for PrometheusExporter {    async fn increment(&self, name: &str, labels: &[(&str, &str)]) -> Result<(), MetricsError> {
+impl MetricsExporter for PrometheusExporter {
+    async fn increment(&self, name: &str, labels: &[(&str, &str)]) -> Result<(), MetricsError> {
         // Validate inputs first
         validation::validate_metric_name(name)?;
         validation::validate_labels(labels)?;
@@ -436,7 +536,8 @@ impl MetricsExporter for PrometheusExporter {    async fn increment(&self, name:
         metric.inc();
         debug!("Incremented counter {} with labels {:?}", name, labels);
         Ok(())
-    }    async fn set_gauge(
+    }
+    async fn set_gauge(
         &self,
         name: &str,
         value: f64,
@@ -462,7 +563,8 @@ impl MetricsExporter for PrometheusExporter {    async fn increment(&self, name:
         metric.set(value);
         debug!("Set gauge {} to {} with labels {:?}", name, value, labels);
         Ok(())
-    }    async fn observe_histogram(
+    }
+    async fn observe_histogram(
         &self,
         name: &str,
         value: f64,

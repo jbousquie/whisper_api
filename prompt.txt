@@ -17,7 +17,7 @@ The project follows a clean, modular architecture with clear separation of conce
 - **HTTP Handlers Module (`handlers/`)**: Contains endpoint implementations:
   - `authentication.rs`: Token-based auth middleware
   - `form.rs`: Multipart form processing
-  - `routes.rs`: API endpoint handlers
+  - `routes.rs`: API endpoint handlers (transcription, status, etc.)
   - `mod.rs`: Module organization and exports
 
 ## Key Components
@@ -170,6 +170,7 @@ The server is built on Actix-web with configurable settings:
 - Configurable timeouts for connections
 - Proper error responses with appropriate HTTP status codes
 - Standardized response formats
+- Unified status endpoint for configuration visibility
 
 ## Request Processing Flow
 
@@ -195,6 +196,14 @@ The server is built on Actix-web with configurable settings:
    - Returns appropriate response based on processing mode
    - For async: Returns job ID and status URL
    - For sync: Returns transcription result directly
+   - For status: Returns API configuration and queue statistics
+
+6. **API Status**:
+   - Provides configuration information (host, port, worker count)
+   - Shows processing settings (device, concurrency mode, formats)
+   - Reports resource limits (file size, retention periods)
+   - Includes real-time queue statistics (queued and processing jobs)
+   - Serves as a monitoring and diagnostic endpoint
 
 ## Configuration Options
 
@@ -205,6 +214,8 @@ The system offers extensive configuration via environment variables or config fi
 - **Processing Options**: Device selection, concurrency settings
 - **Security**: Authentication requirement
 - **Operation Mode**: Default sync/async behavior
+
+All these configuration options are transparently exposed through the `/status` endpoint, providing runtime visibility into the current API configuration and operational status.
 
 ## Error Handling and Recovery
 

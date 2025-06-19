@@ -29,9 +29,11 @@ pub struct PrometheusExporter {
     allow_metric_removal: bool,
 }
 
-impl PrometheusExporter {    pub fn new() -> Self {
+impl PrometheusExporter {
+    pub fn new() -> Self {
         let registry = Registry::new();
         let max_metrics = 1000; // Default limit
+
         // Pre-allocate capacity for better performance
         let capacity = (max_metrics / 3).max(16); // Distribute among 3 maps, minimum 16
         Self {
@@ -44,7 +46,8 @@ impl PrometheusExporter {    pub fn new() -> Self {
             metric_count: AtomicUsize::new(0),
             allow_metric_removal: true, // Default: allow removal
         }
-    }    /// Create a new PrometheusExporter with custom max metrics limit
+    }
+    /// Create a new PrometheusExporter with custom max metrics limit
     #[allow(dead_code)] // May be used in configuration scenarios
     pub fn with_max_metrics(max_metrics: usize) -> Self {
         let registry = Registry::new();
@@ -60,7 +63,8 @@ impl PrometheusExporter {    pub fn new() -> Self {
             metric_count: AtomicUsize::new(0),
             allow_metric_removal: true,
         }
-    }    /// Create a new PrometheusExporter with namespace prefix
+    }
+    /// Create a new PrometheusExporter with namespace prefix
     #[allow(dead_code)] // May be used in configuration scenarios
     pub fn with_namespace<S: Into<String>>(namespace: S) -> Self {
         let namespace = namespace.into();
@@ -80,7 +84,8 @@ impl PrometheusExporter {    pub fn new() -> Self {
             metric_count: AtomicUsize::new(0),
             allow_metric_removal: true,
         }
-    }    /// Create a new PrometheusExporter with both namespace and max metrics
+    }
+    /// Create a new PrometheusExporter with both namespace and max metrics
     #[allow(dead_code)] // May be used in configuration scenarios
     pub fn with_namespace_and_limits<S: Into<String>>(namespace: S, max_metrics: usize) -> Self {
         let namespace = namespace.into();
@@ -132,7 +137,8 @@ impl PrometheusExporter {    pub fn new() -> Self {
             return Err(MetricsError::configuration_error(
                 "PROMETHEUS_MAX_METRICS must be greater than 0",
             ));
-        }        let allow_metric_removal = std::env::var("PROMETHEUS_ALLOW_REMOVAL")
+        }
+        let allow_metric_removal = std::env::var("PROMETHEUS_ALLOW_REMOVAL")
             .map(|val| val.to_lowercase() != "false")
             .unwrap_or(true);
         let registry = Registry::new();
@@ -176,16 +182,26 @@ impl PrometheusExporter {    pub fn new() -> Self {
             .join(" ");
 
         format!("{} - {}", readable_name, metric_type)
-    }
-    fn check_resource_limits(&self) -> Result<(), MetricsError> {
-        let current_count = self.metric_count.load(Ordering::SeqCst);
-        if current_count >= self.max_metrics {
-            return Err(MetricsError::resource_limit_exceeded(format!(
-                "Maximum number of metrics ({}) exceeded",
-                self.max_metrics
-            )));
+    }    /// Atomically check and reserve a metric slot to prevent race conditions
+    fn check_and_reserve_metric_slot(&self) -> Result<(), MetricsError> {
+        let mut current = self.metric_count.load(Ordering::Relaxed);
+        loop {
+            if current >= self.max_metrics {
+                return Err(MetricsError::resource_limit_exceeded(format!(
+                    "Maximum number of metrics ({}) exceeded",
+                    self.max_metrics
+                )));
+            }
+            match self.metric_count.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::SeqCst,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(v) => current = v,
+            }
         }
-        self.metric_count.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 
@@ -218,157 +234,162 @@ impl PrometheusExporter {    pub fn new() -> Self {
                 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 25.0, 50.0, 100.0,
             ]
         }
-    }
-    async fn get_or_create_counter(
+    }    async fn get_or_create_counter(
         &self,
         name: &str,
         help: &str,
-        label_names: &[&str],
+        label_names: &[String],
     ) -> Result<CounterVec, MetricsError> {
         let name_with_namespace = self.apply_namespace(name);
+
+        // Check for metric type conflicts
+        self.check_metric_type_conflict(name, "counter")?;
 
         // Fast path: check if metric already exists
         if let Some(counter) = self.counters.get(&name_with_namespace) {
             return Ok(counter.clone());
         }
 
-        // Check resource limits before creating new metric
-        self.check_resource_limits()?;
+        // Use entry API for atomic get-or-create operation
+        let entry = self.counters.entry(name_with_namespace.clone());
+        match entry {
+            dashmap::mapref::entry::Entry::Occupied(e) => Ok(e.get().clone()),
+            dashmap::mapref::entry::Entry::Vacant(e) => {
+                // Atomically check and reserve metric slot
+                self.check_and_reserve_metric_slot()?;
 
-        let opts = Opts::new(&name_with_namespace, help);
-        let counter = CounterVec::new(opts, label_names).map_err(|e| {
-            MetricsError::registration_failed(name, format!("Failed to create counter: {}", e))
-        })?;
+                // Convert String to &str for Prometheus API
+                let label_name_refs: Vec<&str> = label_names.iter().map(|s| s.as_str()).collect();
 
-        // Try to register with Prometheus, handling race conditions
-        match self.registry.register(Box::new(counter.clone())) {
-            Ok(_) => {
-                self.counters.insert(name_with_namespace, counter.clone());
-                Ok(counter)
-            }
-            Err(e) => {
-                // Check if it's a duplicate registration error (race condition)
-                if e.to_string().contains("duplicate") {
-                    // Another thread registered it, fetch the existing one
-                    if let Some(existing_counter) = self.counters.get(&name_with_namespace) {
-                        Ok(existing_counter.clone())
-                    } else {
-                        Err(MetricsError::registration_failed(
-                            name,
-                            "Race condition in counter registration",
-                        ))
-                    }
-                } else {
-                    Err(MetricsError::registration_failed(
+                // Create the counter
+                let opts = Opts::new(&name_with_namespace, help);
+                let counter = CounterVec::new(opts, &label_name_refs).map_err(|err| {
+                    // Rollback the metric count if creation fails
+                    self.metric_count.fetch_sub(1, Ordering::SeqCst);
+                    MetricsError::registration_failed(name, format!("Failed to create counter: {}", err))
+                })?;
+
+                // Register with Prometheus registry
+                if let Err(err) = self.registry.register(Box::new(counter.clone())) {
+                    // Rollback the metric count if registration fails
+                    self.metric_count.fetch_sub(1, Ordering::SeqCst);
+                    return Err(MetricsError::registration_failed(
                         name,
-                        format!("Failed to register counter: {}", e),
-                    ))
+                        format!("Failed to register counter: {}", err),
+                    ));
                 }
+
+                // Insert and return the counter
+                Ok(e.insert(counter).clone())
             }
         }
-    }
-    async fn get_or_create_gauge(
+    }    async fn get_or_create_gauge(
         &self,
         name: &str,
         help: &str,
-        label_names: &[&str],
+        label_names: &[String],
     ) -> Result<GaugeVec, MetricsError> {
         let name_with_namespace = self.apply_namespace(name);
+
+        // Check for metric type conflicts
+        self.check_metric_type_conflict(name, "gauge")?;
 
         // Fast path: check if metric already exists
         if let Some(gauge) = self.gauges.get(&name_with_namespace) {
             return Ok(gauge.clone());
         }
 
-        // Check resource limits before creating new metric
-        self.check_resource_limits()?;
+        // Use entry API for atomic get-or-create operation
+        let entry = self.gauges.entry(name_with_namespace.clone());
+        match entry {
+            dashmap::mapref::entry::Entry::Occupied(e) => Ok(e.get().clone()),
+            dashmap::mapref::entry::Entry::Vacant(e) => {
+                // Atomically check and reserve metric slot
+                self.check_and_reserve_metric_slot()?;
 
-        let opts = Opts::new(&name_with_namespace, help);
-        let gauge = GaugeVec::new(opts, label_names).map_err(|e| {
-            MetricsError::registration_failed(name, format!("Failed to create gauge: {}", e))
-        })?;
+                // Convert String to &str for Prometheus API
+                let label_name_refs: Vec<&str> = label_names.iter().map(|s| s.as_str()).collect();
 
-        // Try to register with Prometheus, handling race conditions
-        match self.registry.register(Box::new(gauge.clone())) {
-            Ok(_) => {
-                self.gauges.insert(name_with_namespace, gauge.clone());
-                Ok(gauge)
-            }
-            Err(e) => {
-                // Check if it's a duplicate registration error (race condition)
-                if e.to_string().contains("duplicate") {
-                    // Another thread registered it, fetch the existing one
-                    if let Some(existing_gauge) = self.gauges.get(&name_with_namespace) {
-                        Ok(existing_gauge.clone())
-                    } else {
-                        Err(MetricsError::registration_failed(
-                            name,
-                            "Race condition in gauge registration",
-                        ))
-                    }
-                } else {
-                    Err(MetricsError::registration_failed(
+                // Create the gauge
+                let opts = Opts::new(&name_with_namespace, help);
+                let gauge = GaugeVec::new(opts, &label_name_refs).map_err(|err| {
+                    // Rollback the metric count if creation fails
+                    self.metric_count.fetch_sub(1, Ordering::SeqCst);
+                    MetricsError::registration_failed(name, format!("Failed to create gauge: {}", err))
+                })?;
+
+                // Register with Prometheus registry
+                if let Err(err) = self.registry.register(Box::new(gauge.clone())) {
+                    // Rollback the metric count if registration fails
+                    self.metric_count.fetch_sub(1, Ordering::SeqCst);
+                    return Err(MetricsError::registration_failed(
                         name,
-                        format!("Failed to register gauge: {}", e),
-                    ))
+                        format!("Failed to register gauge: {}", err),
+                    ));
                 }
+
+                // Insert and return the gauge
+                Ok(e.insert(gauge).clone())
             }
         }
-    }
-    async fn get_or_create_histogram(
+    }    async fn get_or_create_histogram(
         &self,
         name: &str,
         help: &str,
-        label_names: &[&str],
+        label_names: &[String],
     ) -> Result<HistogramVec, MetricsError> {
         let name_with_namespace = self.apply_namespace(name);
+
+        // Check for metric type conflicts
+        self.check_metric_type_conflict(name, "histogram")?;
 
         // Fast path: check if metric already exists
         if let Some(histogram) = self.histograms.get(&name_with_namespace) {
             return Ok(histogram.clone());
         }
 
-        // Check resource limits before creating new metric
-        self.check_resource_limits()?;
+        // Use entry API for atomic get-or-create operation
+        let entry = self.histograms.entry(name_with_namespace.clone());
+        match entry {
+            dashmap::mapref::entry::Entry::Occupied(e) => Ok(e.get().clone()),
+            dashmap::mapref::entry::Entry::Vacant(e) => {
+                // Atomically check and reserve metric slot
+                self.check_and_reserve_metric_slot()?;
 
-        // Configure explicit histogram buckets for better observability
-        let buckets = Self::get_histogram_buckets(name);
-        let opts = HistogramOpts::new(&name_with_namespace, help).buckets(buckets);
-        let histogram = HistogramVec::new(opts, label_names).map_err(|e| {
-            MetricsError::registration_failed(name, format!("Failed to create histogram: {}", e))
-        })?;
+                // Convert String to &str for Prometheus API
+                let label_name_refs: Vec<&str> = label_names.iter().map(|s| s.as_str()).collect();
 
-        // Try to register with Prometheus, handling race conditions
-        match self.registry.register(Box::new(histogram.clone())) {
-            Ok(_) => {
-                self.histograms
-                    .insert(name_with_namespace, histogram.clone());
-                Ok(histogram)
-            }
-            Err(e) => {
-                // Check if it's a duplicate registration error (race condition)
-                if e.to_string().contains("duplicate") {
-                    // Another thread registered it, fetch the existing one
-                    if let Some(existing_histogram) = self.histograms.get(&name_with_namespace) {
-                        Ok(existing_histogram.clone())
-                    } else {
-                        Err(MetricsError::registration_failed(
-                            name,
-                            "Race condition in histogram registration",
-                        ))
-                    }
-                } else {
-                    Err(MetricsError::registration_failed(
+                // Configure explicit histogram buckets for better observability
+                let buckets = Self::get_histogram_buckets(name);
+                let opts = HistogramOpts::new(&name_with_namespace, help).buckets(buckets);
+                let histogram = HistogramVec::new(opts, &label_name_refs).map_err(|err| {
+                    // Rollback the metric count if creation fails
+                    self.metric_count.fetch_sub(1, Ordering::SeqCst);
+                    MetricsError::registration_failed(name, format!("Failed to create histogram: {}", err))
+                })?;
+
+                // Register with Prometheus registry
+                if let Err(err) = self.registry.register(Box::new(histogram.clone())) {
+                    // Rollback the metric count if registration fails
+                    self.metric_count.fetch_sub(1, Ordering::SeqCst);
+                    return Err(MetricsError::registration_failed(
                         name,
-                        format!("Failed to register histogram: {}", e),
-                    ))
+                        format!("Failed to register histogram: {}", err),
+                    ));
                 }
+
+                // Insert and return the histogram
+                Ok(e.insert(histogram).clone())
             }
         }
-    }
-    fn extract_label_names_and_values<'a>(
+    }fn extract_label_names_and_values<'a>(
         labels: &'a [(&'a str, &'a str)],
-    ) -> Result<(Vec<&'a str>, Vec<&'a str>), MetricsError> {
+    ) -> Result<(Vec<String>, Vec<&'a str>), MetricsError> {
+        // Validate label values
+        for (_, value) in labels {
+            Self::validate_label_value(value)?;
+        }
+
         let label_names: Vec<&str> = labels.iter().map(|(k, _)| *k).collect();
         let unique_names: HashSet<&str> = label_names.iter().copied().collect();
         if unique_names.len() != label_names.len() {
@@ -377,8 +398,17 @@ impl PrometheusExporter {    pub fn new() -> Self {
                 "Duplicate label names detected",
             ));
         }
-        let label_values: Vec<&str> = labels.iter().map(|(_, v)| *v).collect();
-        Ok((label_names, label_values))
+
+        // Canonicalize label names to ensure consistent ordering
+        let canonical_names = Self::canonicalize_label_names(&label_names);        // Reorder label values to match the canonical order
+        let label_value_map: std::collections::HashMap<&str, &str> = 
+            labels.iter().map(|(k, v)| (*k, *v)).collect();
+        let ordered_values: Vec<&str> = canonical_names
+            .iter()
+            .map(|name| label_value_map[name.as_str()])
+            .collect();
+
+        Ok((canonical_names, ordered_values))
     }
     /// Remove a counter metric. Use with caution, as removing metrics can disrupt Prometheus time-series data.
     #[allow(dead_code)] // May be used for cleanup scenarios
@@ -516,6 +546,47 @@ impl PrometheusExporter {    pub fn new() -> Self {
     #[allow(dead_code)]
     pub fn metric_count(&self) -> usize {
         self.metric_count.load(Ordering::SeqCst)
+    }
+
+    /// Canonicalize label names by sorting them to ensure consistent metric creation
+    /// regardless of label order in subsequent calls
+    fn canonicalize_label_names(label_names: &[&str]) -> Vec<String> {
+        let mut names: Vec<String> = label_names.iter().map(|s| s.to_string()).collect();
+        names.sort();
+        names
+    }
+
+    /// Validate label value according to Prometheus requirements
+    fn validate_label_value(value: &str) -> Result<(), MetricsError> {
+        if value.contains('"') || value.contains('\n') || value.contains('\\') {
+            return Err(MetricsError::invalid_label(
+                "value", 
+                "Label value contains invalid characters (quotes, newlines, or backslashes)"
+            ));
+        }
+        Ok(())
+    }
+
+    /// Check for metric type conflicts to prevent creating different metric types with same name
+    fn check_metric_type_conflict(&self, name: &str, metric_type: &str) -> Result<(), MetricsError> {
+        let name_with_namespace = self.apply_namespace(name);
+        
+        let conflicts = [
+            (self.counters.contains_key(&name_with_namespace), "counter"),
+            (self.gauges.contains_key(&name_with_namespace), "gauge"),
+            (self.histograms.contains_key(&name_with_namespace), "histogram"),
+        ];
+        
+        for (exists, existing_type) in conflicts {
+            if exists && existing_type != metric_type {
+                return Err(MetricsError::registration_failed(
+                    name,
+                    format!("Metric name conflict: '{}' already exists as {} but trying to create as {}", 
+                           name, existing_type, metric_type)
+                ));
+            }
+        }
+        Ok(())
     }
 }
 

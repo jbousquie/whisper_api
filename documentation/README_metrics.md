@@ -1,6 +1,6 @@
-# Whisper API Metrics Module
+# Whisper API metrics module 
 
-## General Architecture of the Metrics System
+## General architecture of the metrics system 
 
 The Whisper API metrics system is designed with a modular architecture that enables the collection, processing, and export of performance data to various monitoring systems. The main module is located in `metrics` and uses a trait-based pattern to support multiple export backends.
 
@@ -18,9 +18,9 @@ Planned/TODO list:
 - Graphite (redundant with statsd)
 - Datadog (requires an API key)
 
-## Structure of the Metrics Module
+## Structure of the metrics module 
 
-### Main Module (`metrics.rs`)
+### Main module (`metrics.rs`) 
 
 The core of the system is the `Metrics` struct which implements the `MetricsCollector` trait. This struct:
 
@@ -28,13 +28,13 @@ The core of the system is the `Metrics` struct which implements the `MetricsColl
 2. Is thread-safe: uses `Arc<dyn MetricsCollector + Send + Sync>` to allow sharing between threads
 3. Robust error handling: includes safety validations to avoid numeric overflows
 
-#### Supported Metric Types
+#### Supported metric types 
 
 - Counters: for cumulative events (jobs submitted, completed, canceled)
 - Gauges: for instantaneous values (queue size, jobs in progress)
 - Histograms: for time distributions (transcription durations)
 
-#### Integration with the Whisper API
+#### Integration with the whisper API 
 
 The metrics system integrates at several levels within the application:
 
@@ -60,9 +60,9 @@ metrics.record_job_completed(&job.model, &job.language, duration, "success").awa
 - Exposing a `/metrics` endpoint for Prometheus
 - Configuring the metrics backend based on environment variables
 
-## Export Modules
+## Export modules 
 
-### Prometheus Module (`prometheus.rs`)
+### Prometheus module (`prometheus.rs`) 
 
 The Prometheus module implements exporting to the Prometheus monitoring system:
 
@@ -88,7 +88,7 @@ The Prometheus module implements exporting to the Prometheus monitoring system:
 - Automatic labels for model and language
 - Exposed via HTTP endpoint `/metrics`
 
-### StatsD Module (`statsd.rs`)
+### StatsD module (`statsd.rs`) 
 
 The StatsD module enables sending metrics to compatible StatsD servers:
 
@@ -115,7 +115,7 @@ STATSD_PREFIX=whisper_api
 
 **Detailed Documentation**: The `STATSD.md` file provides a comprehensive guide to integration with different backends (Graphite, InfluxDB, DataDog).
 
-### Null Module (`null.rs`)
+### Null module (`null.rs`) 
 
 The Null module implements a "no-op" backend for metrics:
 
@@ -136,7 +136,7 @@ impl MetricsCollector for NullMetrics {
 }
 ```
 
-## Configuration and Backend Selection
+## Configuration and backend selection 
 
 The system uses environment variables to select the backend:
 
@@ -149,7 +149,7 @@ let metrics = match std::env::var("METRICS_BACKEND").as_deref() {
 };
 ```
 
-## System Benefits
+## System benefits 
 
 1. **Modularity**: Makes it easy to add new metrics backends
 2. **Performance**: Non-blocking asynchronous operations
@@ -157,7 +157,7 @@ let metrics = match std::env::var("METRICS_BACKEND").as_deref() {
 4. **Flexibility**: Support for multiple monitoring systems simultaneously
 5. **Observability**: Detailed metrics on all aspects of the API
 
-## Collected Metrics
+## Collected metrics 
 
 The system monitors in real-time:
 

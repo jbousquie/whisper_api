@@ -210,6 +210,209 @@ impl MetricsMonitoringConfig {
     }
 }
 
+/// Configuration for metrics system resource limits and behavior
+#[derive(Debug, Clone)]
+pub struct MetricsResourceConfig {
+    /// Maximum number of metrics to track (prevents memory exhaustion)
+    pub max_metrics: usize,
+    /// Maximum number of label combinations per metric (prevents cardinality explosion)
+    pub max_label_combinations: usize,
+    /// Maximum length for metric names
+    pub max_metric_name_length: usize,
+    /// Maximum length for label names
+    pub max_label_name_length: usize,
+    /// Maximum length for label values
+    pub max_label_value_length: usize,
+    /// Maximum number of labels per metric
+    pub max_labels_per_metric: usize,
+    /// Enable automatic cleanup of unused metrics (when applicable)
+    #[allow(dead_code)]
+    pub enable_metric_cleanup: bool,
+    /// Interval for metric cleanup checks (in seconds)
+    pub cleanup_interval_seconds: u64,
+}
+
+impl Default for MetricsResourceConfig {
+    fn default() -> Self {
+        Self {
+            max_metrics: 1000,
+            max_label_combinations: 10000,
+            max_metric_name_length: 128,
+            max_label_name_length: 64,
+            max_label_value_length: 256,
+            max_labels_per_metric: 16,
+            enable_metric_cleanup: false,
+            cleanup_interval_seconds: 300, // 5 minutes
+        }
+    }
+}
+
+impl MetricsResourceConfig {
+    /// Create configuration from environment variables
+    ///
+    /// Environment variables:
+    /// - METRICS_MAX_METRICS: Maximum number of metrics (default: 1000)
+    /// - METRICS_MAX_LABEL_COMBINATIONS: Maximum label combinations (default: 10000)
+    /// - METRICS_MAX_METRIC_NAME_LENGTH: Maximum metric name length (default: 128)
+    /// - METRICS_MAX_LABEL_NAME_LENGTH: Maximum label name length (default: 64)
+    /// - METRICS_MAX_LABEL_VALUE_LENGTH: Maximum label value length (default: 256)
+    /// - METRICS_MAX_LABELS_PER_METRIC: Maximum labels per metric (default: 16)
+    /// - METRICS_ENABLE_CLEANUP: Enable metric cleanup (default: false)
+    /// - METRICS_CLEANUP_INTERVAL_SECONDS: Cleanup interval (default: 300)
+    pub fn from_env() -> Self {
+        Self {
+            max_metrics: std::env::var("METRICS_MAX_METRICS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1000),
+            max_label_combinations: std::env::var("METRICS_MAX_LABEL_COMBINATIONS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(10000),
+            max_metric_name_length: std::env::var("METRICS_MAX_METRIC_NAME_LENGTH")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(128),
+            max_label_name_length: std::env::var("METRICS_MAX_LABEL_NAME_LENGTH")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(64),
+            max_label_value_length: std::env::var("METRICS_MAX_LABEL_VALUE_LENGTH")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(256),
+            max_labels_per_metric: std::env::var("METRICS_MAX_LABELS_PER_METRIC")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(16),
+            enable_metric_cleanup: std::env::var("METRICS_ENABLE_CLEANUP")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(false),
+            cleanup_interval_seconds: std::env::var("METRICS_CLEANUP_INTERVAL_SECONDS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(300),
+        }
+    }
+
+    /// Validate the configuration values
+    pub fn validate(&self) -> Result<(), MetricsError> {
+        if self.max_metrics == 0 {
+            return Err(MetricsError::configuration_error(
+                "max_metrics must be greater than 0"
+            ));
+        }
+        if self.max_label_combinations == 0 {
+            return Err(MetricsError::configuration_error(
+                "max_label_combinations must be greater than 0"
+            ));
+        }
+        if self.max_metric_name_length == 0 {
+            return Err(MetricsError::configuration_error(
+                "max_metric_name_length must be greater than 0"
+            ));
+        }
+        if self.max_label_name_length == 0 {
+            return Err(MetricsError::configuration_error(
+                "max_label_name_length must be greater than 0"
+            ));
+        }
+        if self.max_label_value_length == 0 {
+            return Err(MetricsError::configuration_error(
+                "max_label_value_length must be greater than 0"
+            ));
+        }
+        if self.max_labels_per_metric == 0 {
+            return Err(MetricsError::configuration_error(
+                "max_labels_per_metric must be greater than 0"
+            ));
+        }
+        if self.cleanup_interval_seconds == 0 {
+            return Err(MetricsError::configuration_error(
+                "cleanup_interval_seconds must be greater than 0"
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Enhanced error handling configuration for metrics operations
+#[derive(Debug, Clone)]
+pub struct MetricsErrorConfig {
+    /// Log validation errors to the configured logger
+    pub log_validation_errors: bool,
+    /// Log resource limit errors
+    pub log_resource_errors: bool,
+    /// Log export errors
+    pub log_export_errors: bool,
+    /// Log configuration errors
+    pub log_config_errors: bool,
+    /// Propagate errors to calling code (vs. silent failure)
+    pub propagate_errors: bool,
+    /// Enable detailed error context in logs
+    pub detailed_error_context: bool,
+    /// Log level for metrics errors (used with external logging integration)
+    pub error_log_level: String,
+}
+
+impl Default for MetricsErrorConfig {
+    fn default() -> Self {
+        Self {
+            log_validation_errors: true,
+            log_resource_errors: true,
+            log_export_errors: true,
+            log_config_errors: true,
+            propagate_errors: false, // Silent failure by default for metrics
+            detailed_error_context: true,
+            error_log_level: "warn".to_string(),
+        }
+    }
+}
+
+impl MetricsErrorConfig {
+    /// Create configuration from environment variables
+    ///
+    /// Environment variables:
+    /// - METRICS_LOG_VALIDATION_ERRORS: Log validation errors (default: true)
+    /// - METRICS_LOG_RESOURCE_ERRORS: Log resource errors (default: true)
+    /// - METRICS_LOG_EXPORT_ERRORS: Log export errors (default: true)
+    /// - METRICS_LOG_CONFIG_ERRORS: Log config errors (default: true)
+    /// - METRICS_PROPAGATE_ERRORS: Propagate errors to caller (default: false)
+    /// - METRICS_DETAILED_ERROR_CONTEXT: Include detailed context (default: true)
+    /// - METRICS_ERROR_LOG_LEVEL: Log level for errors (default: warn)
+    pub fn from_env() -> Self {
+        Self {
+            log_validation_errors: std::env::var("METRICS_LOG_VALIDATION_ERRORS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(true),
+            log_resource_errors: std::env::var("METRICS_LOG_RESOURCE_ERRORS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(true),
+            log_export_errors: std::env::var("METRICS_LOG_EXPORT_ERRORS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(true),
+            log_config_errors: std::env::var("METRICS_LOG_CONFIG_ERRORS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(true),
+            propagate_errors: std::env::var("METRICS_PROPAGATE_ERRORS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(false),
+            detailed_error_context: std::env::var("METRICS_DETAILED_ERROR_CONTEXT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(true),
+            error_log_level: std::env::var("METRICS_ERROR_LOG_LEVEL")
+                .unwrap_or_else(|_| "warn".to_string()),
+        }
+    }
+}
+
 /// Metrics exporter trait for pluggable monitoring systems
 ///
 /// This trait defines the interface that all metrics exporters must implement.
@@ -317,6 +520,8 @@ pub trait MetricsExporter: Send + Sync {
 pub struct Metrics {
     exporter: Arc<dyn MetricsExporter>,
     monitoring_config: MetricsMonitoringConfig,
+    resource_config: MetricsResourceConfig,
+    error_config: MetricsErrorConfig,
 }
 
 impl Metrics {
@@ -324,6 +529,8 @@ impl Metrics {
         Self {
             exporter,
             monitoring_config: MetricsMonitoringConfig::default(),
+            resource_config: MetricsResourceConfig::default(),
+            error_config: MetricsErrorConfig::default(),
         }
     }
     /// Create metrics with custom monitoring configuration
@@ -335,133 +542,182 @@ impl Metrics {
         Self {
             exporter,
             monitoring_config: config,
+            resource_config: MetricsResourceConfig::default(),
+            error_config: MetricsErrorConfig::default(),
         }
     }
-    /// Increment a counter metric
-    pub async fn increment(&self, name: &str, labels: &[(&str, &str)]) {
+    /// Create metrics with full configuration control
+    #[allow(dead_code)]
+    pub fn with_full_config(
+        exporter: Arc<dyn MetricsExporter>,
+        monitoring_config: MetricsMonitoringConfig,
+        resource_config: MetricsResourceConfig,
+        error_config: MetricsErrorConfig,
+    ) -> Result<Self, MetricsError> {
+        // Validate resource configuration
+        resource_config.validate()?;
+        
+        Ok(Self {
+            exporter,
+            monitoring_config,
+            resource_config,
+            error_config,
+        })
+    }
+
+    /// Create metrics from environment variables
+    #[allow(dead_code)]
+    pub fn from_env(exporter: Arc<dyn MetricsExporter>) -> Result<Self, MetricsError> {
+        let monitoring_config = MetricsMonitoringConfig::from_env();
+        let resource_config = MetricsResourceConfig::from_env();
+        let error_config = MetricsErrorConfig::from_env();
+        
+        // Validate configurations
+        resource_config.validate()?;
+        
+        Ok(Self {
+            exporter,
+            monitoring_config,
+            resource_config,
+            error_config,
+        })
+    }
+
+    /// Get current resource configuration
+    #[allow(dead_code)]
+    pub fn resource_config(&self) -> &MetricsResourceConfig {
+        &self.resource_config
+    }
+
+    /// Get current error handling configuration
+    #[allow(dead_code)]
+    pub fn error_config(&self) -> &MetricsErrorConfig {
+        &self.error_config
+    }    /// Increment a counter metric
+    pub async fn increment(&self, name: &str, labels: &[(&str, &str)]) -> Result<(), MetricsError> {
         let start = if self.monitoring_config.enable_operation_timing {
             Some(std::time::Instant::now())
         } else {
             None
         };
+
+        // Validate metric constraints first
+        if let Err(e) = self.validate_metric_constraints(name, labels) {
+            let should_propagate = self.handle_metrics_error(&e, "increment", name).await;
+            if should_propagate {
+                return Err(e);
+            }
+            return Ok(()); // Silent failure if not propagating
+        }
 
         let result = self.exporter.increment(name, labels).await;
 
         if let Err(e) = &result {
-            warn!("Failed to increment metric '{}': {}", name, e);
-            // Record validation error if enabled and it's a validation issue
-            if self.monitoring_config.enable_validation_tracking
-                && matches!(
-                    e,
-                    MetricsError::InvalidName { .. } | MetricsError::InvalidLabel { .. }
-                )
-            {
-                let _ = self
-                    .exporter
-                    .increment("metrics_validation_errors_total", &[("metric_name", name)])
-                    .await;
+            let should_propagate = self.handle_metrics_error(e, "increment", name).await;
+            if !should_propagate {
+                // Silent failure - return Ok but continue with meta-metrics
+            } else if self.error_config.propagate_errors {
+                // Record meta-metrics first, then propagate error
+                if let Some(start_time) = start {
+                    self.record_operation_meta_metrics("increment", start_time, false).await;
+                }
+                return Err(e.clone());
             }
         }
 
         // Record meta-metrics if enabled (avoiding recursion by checking metric name)
-        if self.monitoring_config.enable_operation_timing
-            && self.monitoring_config.enable_meta_metrics
-            && !name.starts_with("metrics_")
-        {
-            if let Some(start_time) = start {
-                let duration_ms = start_time.elapsed().as_millis() as f64;
-                let _ = self
-                    .exporter
-                    .observe_histogram(
-                        "metrics_operation_duration_ms",
-                        duration_ms,
-                        &[
-                            ("operation", "increment"),
-                            ("status", if result.is_ok() { "success" } else { "error" }),
-                        ],
-                    )
-                    .await;
-            }
+        if let Some(start_time) = start {
+            self.record_operation_meta_metrics("increment", start_time, result.is_ok()).await;
         }
-    }
-    /// Set a gauge metric value
-    pub async fn set_gauge(&self, name: &str, value: f64, labels: &[(&str, &str)]) {
+
+        if self.error_config.propagate_errors {
+            result
+        } else {
+            Ok(()) // Always return Ok if not propagating errors
+        }
+    }    /// Set a gauge metric value
+    pub async fn set_gauge(&self, name: &str, value: f64, labels: &[(&str, &str)]) -> Result<(), MetricsError> {
         let start = if self.monitoring_config.enable_operation_timing {
             Some(std::time::Instant::now())
         } else {
             None
         };
 
+        // Validate metric constraints first
+        if let Err(e) = self.validate_metric_constraints(name, labels) {
+            let should_propagate = self.handle_metrics_error(&e, "set_gauge", name).await;
+            if should_propagate {
+                return Err(e);
+            }
+            return Ok(()); // Silent failure if not propagating
+        }
+
         let result = self.exporter.set_gauge(name, value, labels).await;
 
         if let Err(e) = &result {
-            warn!("Failed to set gauge metric '{}': {}", name, e);
-            if self.monitoring_config.enable_validation_tracking
-                && matches!(
-                    e,
-                    MetricsError::InvalidName { .. } | MetricsError::InvalidLabel { .. }
-                )
-            {
-                let _ = self
-                    .exporter
-                    .increment("metrics_validation_errors_total", &[("metric_name", name)])
-                    .await;
+            let should_propagate = self.handle_metrics_error(e, "set_gauge", name).await;
+            if !should_propagate {
+                // Silent failure - return Ok but continue with meta-metrics
+            } else if self.error_config.propagate_errors {
+                // Record meta-metrics first, then propagate error
+                if let Some(start_time) = start {
+                    self.record_operation_meta_metrics("set_gauge", start_time, false).await;
+                }
+                return Err(e.clone());
             }
         }
 
         // Record meta-metrics if enabled
-        if self.monitoring_config.enable_operation_timing
-            && self.monitoring_config.enable_meta_metrics
-            && !name.starts_with("metrics_")
-        {
-            if let Some(start_time) = start {
-                let duration_ms = start_time.elapsed().as_millis() as f64;
-                let _ = self
-                    .exporter
-                    .observe_histogram(
-                        "metrics_operation_duration_ms",
-                        duration_ms,
-                        &[
-                            ("operation", "set_gauge"),
-                            ("status", if result.is_ok() { "success" } else { "error" }),
-                        ],
-                    )
-                    .await;
-            }
+        if let Some(start_time) = start {
+            self.record_operation_meta_metrics("set_gauge", start_time, result.is_ok()).await;
         }
-    }
-    /// Observe a value in a histogram metric
-    pub async fn observe_histogram(&self, name: &str, value: f64, labels: &[(&str, &str)]) {
-        let start = std::time::Instant::now();
+
+        if self.error_config.propagate_errors {
+            result
+        } else {
+            Ok(()) // Always return Ok if not propagating errors
+        }
+    }    /// Observe a value in a histogram metric
+    pub async fn observe_histogram(&self, name: &str, value: f64, labels: &[(&str, &str)]) -> Result<(), MetricsError> {
+        let start = if self.monitoring_config.enable_operation_timing {
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
+
+        // Validate metric constraints first
+        if let Err(e) = self.validate_metric_constraints(name, labels) {
+            let should_propagate = self.handle_metrics_error(&e, "observe_histogram", name).await;
+            if should_propagate {
+                return Err(e);
+            }
+            return Ok(()); // Silent failure if not propagating
+        }
+
         let result = self.exporter.observe_histogram(name, value, labels).await;
-        let duration_ms = start.elapsed().as_millis() as f64;
 
         if let Err(e) = &result {
-            warn!("Failed to observe histogram metric '{}': {}", name, e);
-            if matches!(
-                e,
-                MetricsError::InvalidName { .. } | MetricsError::InvalidLabel { .. }
-            ) {
-                let _ = self
-                    .exporter
-                    .increment("metrics_validation_errors_total", &[("metric_name", name)])
-                    .await;
+            let should_propagate = self.handle_metrics_error(e, "observe_histogram", name).await;
+            if !should_propagate {
+                // Silent failure - return Ok but continue with meta-metrics
+            } else if self.error_config.propagate_errors {
+                // Record meta-metrics first, then propagate error
+                if let Some(start_time) = start {
+                    self.record_operation_meta_metrics("observe_histogram", start_time, false).await;
+                }
+                return Err(e.clone());
             }
         }
 
-        // Record meta-metrics (avoiding recursion)
-        if !name.starts_with("metrics_") {
-            let _ = self
-                .exporter
-                .observe_histogram(
-                    "metrics_operation_duration_ms",
-                    duration_ms,
-                    &[
-                        ("operation", "observe_histogram"),
-                        ("status", if result.is_ok() { "success" } else { "error" }),
-                    ],
-                )
-                .await;
+        // Record meta-metrics if enabled
+        if let Some(start_time) = start {
+            self.record_operation_meta_metrics("observe_histogram", start_time, result.is_ok()).await;
+        }
+
+        if self.error_config.propagate_errors {
+            result
+        } else {
+            Ok(()) // Always return Ok if not propagating errors
         }
     }
     /// Export metrics in the format expected by the monitoring system
@@ -524,9 +780,7 @@ impl Metrics {
         });
 
         result
-    }
-
-    // Convenience methods for common metrics    /// Record HTTP request duration
+    }    // Convenience methods for common metrics    /// Record HTTP request duration
     pub async fn record_http_request(
         &self,
         endpoint: &str,
@@ -534,7 +788,7 @@ impl Metrics {
         status: &str,
         duration: f64,
     ) {
-        self.observe_histogram(
+        self.observe_histogram_internal(
             "http_request_duration_seconds",
             duration,
             &[
@@ -545,7 +799,7 @@ impl Metrics {
         )
         .await;
 
-        self.increment(
+        self.increment_internal(
             "http_requests_total",
             &[
                 ("endpoint", endpoint),
@@ -557,7 +811,7 @@ impl Metrics {
     }
     /// Record job submission
     pub async fn record_job_submitted(&self, model: &str, language: &str) {
-        self.increment(
+        self.increment_internal(
             "jobs_submitted_total",
             &[("model", model), ("language", language)],
         )
@@ -572,14 +826,14 @@ impl Metrics {
         duration: f64,
         status: &str,
     ) {
-        self.observe_histogram(
+        self.observe_histogram_internal(
             "job_processing_duration_seconds",
             duration,
             &[("model", model), ("language", language), ("status", status)],
         )
         .await;
 
-        self.increment(
+        self.increment_internal(
             "jobs_completed_total",
             &[("model", model), ("language", language), ("status", status)],
         )
@@ -588,28 +842,28 @@ impl Metrics {
 
     /// Set current queue size
     pub async fn set_queue_size(&self, size: f64) {
-        self.set_gauge("queue_size", size, &[]).await;
+        self.set_gauge_internal("queue_size", size, &[]).await;
     }
 
     /// Set number of jobs currently processing
     pub async fn set_jobs_processing(&self, count: f64) {
-        self.set_gauge("jobs_processing", count, &[]).await;
+        self.set_gauge_internal("jobs_processing", count, &[]).await;
     }
     /// Record authentication attempt
     pub async fn record_auth_attempt(&self, status: &str) {
-        self.increment("auth_attempts_total", &[("status", status)])
+        self.increment_internal("auth_attempts_total", &[("status", status)])
             .await;
     }
 
     /// Record file size
     #[allow(dead_code)]
     pub async fn record_file_size(&self, size_bytes: f64) {
-        self.observe_histogram("file_size_bytes", size_bytes, &[])
+        self.observe_histogram_internal("file_size_bytes", size_bytes, &[])
             .await;
     }
     /// Record job cancellation
     pub async fn record_job_cancelled(&self, model: &str, language: &str) {
-        self.increment(
+        self.increment_internal(
             "jobs_cancelled_total",
             &[("model", model), ("language", language)],
         )
@@ -618,9 +872,8 @@ impl Metrics {
 
     /// Record when a job starts processing
     pub async fn record_job_processing_start(&self) {
-        self.increment("jobs_processing_started_total", &[]).await;
-    }
-    /// Record current queue size (alias for set_queue_size)
+        self.increment_internal("jobs_processing_started_total", &[]).await;
+    }    /// Record current queue size (alias for set_queue_size)
     pub async fn record_queue_size(&self, size: usize) {
         // Use safe conversion to avoid precision loss for large queue sizes
         match validation::validate_usize_conversion(size) {
@@ -628,7 +881,7 @@ impl Metrics {
             Err(e) => {
                 warn!("Failed to record queue size {}: {}", size, e);
                 // Record the error but continue operation
-                self.increment("queue_size_conversion_errors_total", &[])
+                self.increment_internal("queue_size_conversion_errors_total", &[])
                     .await;
             }
         }
@@ -639,7 +892,7 @@ impl Metrics {
         let status = if success { "success" } else { "error" };
 
         // Track metrics system performance
-        self.observe_histogram(
+        let _ = self.observe_histogram(
             "metrics_operation_duration_ms",
             duration_ms,
             &[("operation", operation), ("status", status)],
@@ -647,7 +900,7 @@ impl Metrics {
         .await;
 
         // Count operations
-        self.increment(
+        let _ = self.increment(
             "metrics_operations_total",
             &[("operation", operation), ("status", status)],
         )
@@ -665,7 +918,7 @@ impl Metrics {
         let status = if success { "success" } else { "error" };
 
         // Track export performance
-        self.observe_histogram(
+        let _ = self.observe_histogram(
             "metrics_export_duration_ms",
             duration_ms,
             &[("exporter", exporter_type), ("status", status)],
@@ -676,7 +929,7 @@ impl Metrics {
         if success {
             match validation::validate_usize_conversion(bytes_exported) {
                 Ok(safe_bytes) => {
-                    self.observe_histogram(
+                    let _ = self.observe_histogram(
                         "metrics_export_bytes",
                         safe_bytes,
                         &[("exporter", exporter_type)],
@@ -690,7 +943,7 @@ impl Metrics {
         }
 
         // Count exports
-        self.increment(
+        let _ = self.increment(
             "metrics_exports_total",
             &[("exporter", exporter_type), ("status", status)],
         )
@@ -699,11 +952,167 @@ impl Metrics {
     /// Record metrics validation errors
     #[allow(dead_code)]
     pub async fn record_metrics_validation_error(&self, error_type: &str, metric_name: &str) {
-        self.increment(
+        let _ = self.increment(
             "metrics_validation_errors_total",
             &[("error_type", error_type), ("metric_name", metric_name)],
         )
         .await;
+    }
+
+    /// Enhanced error handling with configurable logging and propagation
+    async fn handle_metrics_error(&self, error: &MetricsError, operation: &str, metric_name: &str) -> bool {
+        let should_log = match error {
+            MetricsError::InvalidName { .. } | MetricsError::InvalidLabel { .. } => {
+                self.error_config.log_validation_errors
+            },
+            MetricsError::ResourceLimitExceeded { .. } => {
+                self.error_config.log_resource_errors
+            },
+            MetricsError::ExportFailed { .. } => {
+                self.error_config.log_export_errors
+            },
+            MetricsError::ConfigurationError { .. } => {
+                self.error_config.log_config_errors
+            },
+            _ => true, // Log other errors by default
+        };
+
+        if should_log {
+            if self.error_config.detailed_error_context {
+                match self.error_config.error_log_level.as_str() {
+                    "error" => log::error!("Metrics {} operation failed for '{}': {} (Context: {})", 
+                                          operation, metric_name, error, self.get_error_context()),
+                    "warn" => log::warn!("Metrics {} operation failed for '{}': {} (Context: {})", 
+                                        operation, metric_name, error, self.get_error_context()),
+                    "info" => log::info!("Metrics {} operation failed for '{}': {} (Context: {})", 
+                                        operation, metric_name, error, self.get_error_context()),
+                    "debug" => log::debug!("Metrics {} operation failed for '{}': {} (Context: {})", 
+                                          operation, metric_name, error, self.get_error_context()),
+                    _ => log::warn!("Metrics {} operation failed for '{}': {} (Context: {})", 
+                                   operation, metric_name, error, self.get_error_context()),
+                }
+            } else {
+                match self.error_config.error_log_level.as_str() {
+                    "error" => log::error!("Metrics {} operation failed for '{}': {}", operation, metric_name, error),
+                    "warn" => log::warn!("Metrics {} operation failed for '{}': {}", operation, metric_name, error),
+                    "info" => log::info!("Metrics {} operation failed for '{}': {}", operation, metric_name, error),
+                    "debug" => log::debug!("Metrics {} operation failed for '{}': {}", operation, metric_name, error),
+                    _ => log::warn!("Metrics {} operation failed for '{}': {}", operation, metric_name, error),
+                }
+            }
+        }
+
+        // Record validation error if enabled and it's a validation issue
+        if self.monitoring_config.enable_validation_tracking
+            && matches!(
+                error,
+                MetricsError::InvalidName { .. } | MetricsError::InvalidLabel { .. }
+            )
+        {
+            let error_type = match error {
+                MetricsError::InvalidName { .. } => "invalid_name",
+                MetricsError::InvalidLabel { .. } => "invalid_label",
+                _ => "unknown",
+            };
+            let _ = self
+                .exporter
+                .increment("metrics_validation_errors_total", &[
+                    ("metric_name", metric_name),
+                    ("operation", operation),
+                    ("error_type", error_type),
+                ])
+                .await;
+        }
+
+        // Return whether errors should be propagated
+        self.error_config.propagate_errors
+    }
+
+    /// Get error context for detailed logging
+    fn get_error_context(&self) -> String {
+        format!(
+            "max_metrics={}, max_labels_per_metric={}, monitoring_enabled={},
+            error_propagation={}", 
+            self.resource_config.max_metrics,
+            self.resource_config.max_labels_per_metric,
+            self.monitoring_config.enable_meta_metrics,
+            self.error_config.propagate_errors
+        )
+    }
+
+    /// Validate metric constraints before processing
+    fn validate_metric_constraints(&self, name: &str, labels: &[(&str, &str)]) -> Result<(), MetricsError> {
+        // Check metric name length
+        if name.len() > self.resource_config.max_metric_name_length {
+            return Err(MetricsError::invalid_name(
+                name,
+                format!("Metric name length {} exceeds maximum {}", 
+                       name.len(), self.resource_config.max_metric_name_length)
+            ));
+        }
+
+        // Check number of labels
+        if labels.len() > self.resource_config.max_labels_per_metric {
+            return Err(MetricsError::invalid_label(
+                "labels",
+                format!("Number of labels {} exceeds maximum {}", 
+                       labels.len(), self.resource_config.max_labels_per_metric)
+            ));
+        }
+
+        // Check label name and value lengths
+        for (label_name, label_value) in labels {            if label_name.len() > self.resource_config.max_label_name_length {
+                return Err(MetricsError::invalid_label(
+                    *label_name,
+                    format!("Label name length {} exceeds maximum {}", 
+                           label_name.len(), self.resource_config.max_label_name_length)
+                ));
+            }
+            if label_value.len() > self.resource_config.max_label_value_length {
+                return Err(MetricsError::invalid_label(
+                    *label_name,
+                    format!("Label value length {} exceeds maximum {}", 
+                           label_value.len(), self.resource_config.max_label_value_length)
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Record operation meta-metrics
+    async fn record_operation_meta_metrics(&self, operation: &str, start_time: std::time::Instant, success: bool) {
+        if self.monitoring_config.enable_operation_timing
+            && self.monitoring_config.enable_meta_metrics
+        {
+            let duration_ms = start_time.elapsed().as_millis() as f64;
+            let _ = self
+                .exporter
+                .observe_histogram(
+                    "metrics_operation_duration_ms",
+                    duration_ms,
+                    &[
+                        ("operation", operation),
+                        ("status", if success { "success" } else { "error" }),
+                    ],
+                )
+                .await;
+        }
+    }
+
+    /// Internal increment that doesn't propagate errors (for convenience methods)
+    async fn increment_internal(&self, name: &str, labels: &[(&str, &str)]) {
+        let _ = self.increment(name, labels).await;
+    }
+
+    /// Internal set_gauge that doesn't propagate errors (for convenience methods)
+    async fn set_gauge_internal(&self, name: &str, value: f64, labels: &[(&str, &str)]) {
+        let _ = self.set_gauge(name, value, labels).await;
+    }
+
+    /// Internal observe_histogram that doesn't propagate errors (for convenience methods)
+    async fn observe_histogram_internal(&self, name: &str, value: f64, labels: &[(&str, &str)]) {
+        let _ = self.observe_histogram(name, value, labels).await;
     }
 }
 
@@ -737,7 +1146,10 @@ pub fn create_metrics_exporter(
             Ok(Arc::new(NullExporter))
         }
         _ => {
-            debug!("Unknown metrics exporter type '{}', using null exporter", exporter_type);
+            debug!(
+                "Unknown metrics exporter type '{}', using null exporter",
+                exporter_type
+            );
             Ok(Arc::new(NullExporter))
         }
     }
@@ -781,4 +1193,69 @@ pub fn create_statsd_exporter_from_env() -> Result<Arc<dyn MetricsExporter>, Met
 pub fn create_null_exporter() -> Arc<dyn MetricsExporter> {
     debug!("Creating null metrics exporter");
     Arc::new(NullExporter)
+}
+
+/// Factory function to create metrics with comprehensive configuration from environment
+#[allow(dead_code)]
+pub fn create_metrics_from_env() -> Result<Metrics, MetricsError> {
+    // Determine exporter type from environment
+    let exporter_type = std::env::var("METRICS_EXPORTER").unwrap_or_else(|_| "prometheus".to_string());
+    
+    // Create exporter based on type
+    let exporter = match exporter_type.to_lowercase().as_str() {
+        "prometheus" => {
+            debug!("Creating Prometheus exporter from environment");
+            Arc::new(PrometheusExporter::from_env()?) as Arc<dyn MetricsExporter>
+        },
+        "statsd" => {
+            debug!("Creating StatsD exporter from environment");
+            Arc::new(StatsDExporter::from_env()?) as Arc<dyn MetricsExporter>
+        },
+        "none" | "null" | "disabled" => {
+            debug!("Creating null exporter (metrics disabled)");
+            Arc::new(NullExporter) as Arc<dyn MetricsExporter>
+        },
+        _ => {
+            debug!("Unknown exporter type '{}', falling back to Prometheus", exporter_type);
+            Arc::new(PrometheusExporter::from_env()?) as Arc<dyn MetricsExporter>
+        }
+    };
+
+    // Create metrics with full environment configuration
+    Metrics::from_env(exporter)
+}
+
+/// Factory function to create metrics with custom resource limits
+#[allow(dead_code)]
+pub fn create_metrics_with_limits(
+    exporter: Arc<dyn MetricsExporter>,
+    max_metrics: usize,
+    max_labels_per_metric: usize,
+) -> Result<Metrics, MetricsError> {
+    let mut resource_config = MetricsResourceConfig::default();
+    resource_config.max_metrics = max_metrics;
+    resource_config.max_labels_per_metric = max_labels_per_metric;
+    
+    Metrics::with_full_config(
+        exporter,
+        MetricsMonitoringConfig::default(),
+        resource_config,
+        MetricsErrorConfig::default(),
+    )
+}
+
+/// Factory function to create metrics with error propagation enabled
+#[allow(dead_code)]
+pub fn create_metrics_with_error_propagation(
+    exporter: Arc<dyn MetricsExporter>,
+) -> Result<Metrics, MetricsError> {
+    let mut error_config = MetricsErrorConfig::default();
+    error_config.propagate_errors = true;
+    
+    Metrics::with_full_config(
+        exporter,
+        MetricsMonitoringConfig::default(),
+        MetricsResourceConfig::default(),
+        error_config,
+    )
 }

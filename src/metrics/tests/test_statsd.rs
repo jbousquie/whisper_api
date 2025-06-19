@@ -38,7 +38,7 @@ async fn test_statsd_integration() -> Result<(), Box<dyn std::error::Error>> {
     println!("1. Testing counter metrics...");
     metrics
         .increment("test_counter", &[("environment", "test")])
-        .await;
+        .await?;
     metrics.record_job_submitted("large-v3", "en").await;
     sleep(Duration::from_millis(100)).await;
 
@@ -46,7 +46,7 @@ async fn test_statsd_integration() -> Result<(), Box<dyn std::error::Error>> {
     println!("2. Testing gauge metrics...");
     metrics
         .set_gauge("test_gauge", 42.0, &[("type", "test")])
-        .await;
+        .await?;
     metrics.set_queue_size(5.0).await;
     metrics.set_jobs_processing(2.0).await;
     sleep(Duration::from_millis(100)).await;
@@ -55,7 +55,7 @@ async fn test_statsd_integration() -> Result<(), Box<dyn std::error::Error>> {
     println!("3. Testing histogram metrics...");
     metrics
         .observe_histogram("test_histogram", 123.45, &[("bucket", "test")])
-        .await;
+        .await?;
     metrics
         .record_http_request("/transcribe", "POST", "200", 1.5)
         .await;

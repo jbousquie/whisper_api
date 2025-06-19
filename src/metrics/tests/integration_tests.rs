@@ -16,15 +16,20 @@ async fn test_prometheus_metrics_basic_operations() {
     // Test counter increment
     metrics
         .increment("test_counter", &[("label", "value")])
-        .await;
+        .await
+        .expect("Failed to increment counter");
 
     // Test gauge setting
-    metrics.set_gauge("test_gauge", 42.0, &[]).await;
+    metrics
+        .set_gauge("test_gauge", 42.0, &[])
+        .await
+        .expect("Failed to set gauge");
 
     // Test histogram observation
     metrics
         .observe_histogram("test_histogram", 1.23, &[("type", "test")])
-        .await;
+        .await
+        .expect("Failed to observe histogram");
 
     // Test export
     let exported = metrics.export().await.expect("Failed to export metrics");
@@ -41,8 +46,9 @@ async fn test_null_exporter_never_fails() {
     let metrics = Metrics::new(create_null_exporter());
 
     // All operations should succeed silently
-    metrics.increment("any_name", &[]).await;
-    metrics.set_gauge("any_gauge", f64::NAN, &[]).await; // Even NaN should be handled    metrics.observe_histogram("any_histogram", -1.0, &[]).await; // Even negative values
+    let _ = metrics.increment("any_name", &[]).await;
+    let _ = metrics.set_gauge("any_gauge", f64::NAN, &[]).await; // Even NaN should be handled
+    let _ = metrics.observe_histogram("any_histogram", -1.0, &[]).await; // Even negative values
 
     let exported = metrics
         .export()
@@ -85,14 +91,16 @@ async fn test_convenience_methods() {
             "transcription_requests",
             &[("language", "en"), ("model", "whisper-large")],
         )
-        .await;
+        .await
+        .expect("Failed to increment transcription_requests");
     metrics
         .observe_histogram(
             "transcription_duration",
             2.5,
             &[("language", "en"), ("model", "whisper-large")],
         )
-        .await;
+        .await
+        .expect("Failed to observe transcription_duration");
 
     // All should complete without panicking
 }
@@ -105,7 +113,7 @@ async fn test_large_values_handling() {
     metrics.record_queue_size(usize::MAX).await;
 
     // Test large histogram values
-    metrics.observe_histogram("large_values", 1e100, &[]).await;
+    metrics.observe_histogram("large_values", 1e100, &[]).await.expect("Failed to observe large histogram value");
 
     // Should complete without issues
 }
@@ -125,7 +133,8 @@ async fn test_statsd_from_env() {
                 let metrics = Metrics::new(exporter);
                 metrics
                     .increment("test_statsd_counter", &[("source", "integration_test")])
-                    .await;
+                    .await
+                    .expect("Failed to increment StatsD counter");
                 // Note: StatsD is fire-and-forget, so we can't verify receipt :(
             }
             Err(e) => {

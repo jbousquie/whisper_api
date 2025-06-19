@@ -23,7 +23,7 @@ mod benchmarks {
             let metrics_clone = Arc::clone(&metrics);
             handles.push(task::spawn(async move {
                 for op in 0..operations_per_task {
-                    metrics_clone
+                    let _ = metrics_clone
                         .increment(
                             "bench_counter",
                             &[("task", &task_id.to_string()), ("op", &op.to_string())],
@@ -69,13 +69,13 @@ mod benchmarks {
             handles.push(task::spawn(async move {
                 for i in 0..500 {
                     // Mix different metric types to test lock contention
-                    metrics_clone
+                    let _ = metrics_clone
                         .increment("mixed_counter", &[("task", &task_id.to_string())])
                         .await;
-                    metrics_clone
+                    let _ = metrics_clone
                         .set_gauge("mixed_gauge", i as f64, &[("task", &task_id.to_string())])
                         .await;
-                    metrics_clone
+                    let _ = metrics_clone
                         .observe_histogram(
                             "mixed_histogram",
                             i as f64 * 0.1,
@@ -115,13 +115,13 @@ mod benchmarks {
 
         // Create a variety of metrics
         for i in 0..100 {
-            metrics
+            let _ = metrics
                 .increment("export_test_counter", &[("series", &i.to_string())])
                 .await;
-            metrics
+            let _ = metrics
                 .set_gauge("export_test_gauge", i as f64, &[("series", &i.to_string())])
                 .await;
-            metrics
+            let _ = metrics
                 .observe_histogram(
                     "export_test_histogram",
                     i as f64,
@@ -165,7 +165,7 @@ mod benchmarks {
 
         // Test creating many unique metrics (tests double-checked locking optimization)
         for i in 0..num_unique_metrics {
-            metrics
+            let _ = metrics
                 .increment(&format!("unique_metric_{}", i), &[])
                 .await;
         }

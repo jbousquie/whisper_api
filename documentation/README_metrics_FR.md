@@ -1,6 +1,6 @@
-# Module de métriques de l'API Whisper
+# Module de métriques de l'api whisper 
 
-## Architecture générale du système de métriques
+## Architecture générale du système de métriques 
 
 Le système de métriques de l'API Whisper est conçu selon une architecture modulaire qui permet de collecter, traiter et exporter des données de performance vers différents systèmes de monitoring. Le module principal se trouve dans `metrics` et utilise un pattern de traits pour supporter plusieurs backends d'export.
 
@@ -20,7 +20,7 @@ En prévision/liste à faire ?
 
 ## Structure du module de métriques
 
-### Module Principal (`metrics.rs`)
+### Module principal (`metrics.rs`)
 
 Le cœur du système est la structure `Metrics` qui implémente le trait `MetricsCollector`. Cette structure :
 
@@ -34,7 +34,7 @@ Le cœur du système est la structure `Metrics` qui implémente le trait `Metric
 - Jauges : pour les valeurs instantanées (taille de la queue, jobs en cours)
 - Histogrammes : pour les distributions de temps (durée des transcriptions)
 
-#### Intégration avec l'API Whisper
+#### Intégration avec l'api whisper
 
 Le système de métriques s'intègre à plusieurs niveaux dans l'application :
 
@@ -53,14 +53,14 @@ self.metrics.set_jobs_processing(safe_count).await;
 metrics.record_job_completed(&job.model, &job.language, duration, "success").await;`
 2. Dans l'application principale (`main.rs`)
 
-#### Métriques HTTP pour les requêtes API
+#### Métriques HTTP pour les requêtes API 
 
 - Exposition d'un endpoint `/metrics` pour Prometheus
 - Configuration du backend de métriques selon les variables d'environnement
 
-## Les différents modules d'export
+## Les différents modules d'export 
 
-### Module Prometheus (`prometheus.rs`)
+### Module prometheus (`prometheus.rs`) 
 
 Le module Prometheus.rs implémente l'export vers le système de monitoring Prometheus.
 
@@ -86,7 +86,7 @@ Buckets d'histogramme personnalisables via les variables d'environnement
 Labels automatiques pour le modèle et la langue
 Exposition via endpoint HTTP /metrics
 
-### Module StatsD (`statsd.rs`)
+### Module statsd (`statsd.rs`) 
 
 Le module StatsD permet l'envoi de métriques vers des serveurs StatsD compatibles.
 
@@ -102,11 +102,11 @@ Le module StatsD permet l'envoi de métriques vers des serveurs StatsD compatibl
 - Gestion d'erreurs : logging des erreurs sans interrompre l'application
 - Formatage automatique : conversion des métriques au format StatsD
 
-### Configuration StatsD
+### Configuration statsd 
 
 Le fichier `STATSD.md` fournit un guide complet d'intégration avec différents backends (Graphite, InfluxDB, DataDog).
 
-### Module Null (`null.rs`)
+### Module null (`null.rs`) 
 
 Le module Null implémente un backend "no-op" pour les métriques.
 
@@ -120,7 +120,7 @@ Le module Null implémente un backend "no-op" pour les métriques.
 
 No op...
   
-#### Configuration générale et sélection du backend
+#### Configuration générale et sélection du backend 
 
 Le système utilise des variables d'environnement pour sélectionner le backend
 

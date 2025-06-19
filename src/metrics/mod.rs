@@ -18,10 +18,6 @@ pub use metrics::{
     create_statsd_exporter_from_env, Metrics, MetricsExporter,
 };
 
-// Error types are used internally by the metrics modules
-//#[allow(unused_imports)]
-//pub use error::MetricsError;
-
 // Integration tests (only compiled when testing)
 #[cfg(test)]
 mod tests {

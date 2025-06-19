@@ -5,77 +5,83 @@ use crate::metrics::error::{validation, MetricsError};
 ///
 use crate::metrics::metrics::MetricsExporter;
 use async_trait::async_trait;
+use dashmap::DashMap;
 use log::debug;
 use prometheus::{
     CounterVec, Encoder, GaugeVec, HistogramOpts, HistogramVec, Opts, Registry, TextEncoder,
 };
-use std::collections::HashMap;
-use tokio::sync::Mutex;
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Prometheus implementation of MetricsExporter
 pub struct PrometheusExporter {
     registry: Registry,
-    counters: Mutex<HashMap<String, CounterVec>>,
-    gauges: Mutex<HashMap<String, GaugeVec>>,
-    histograms: Mutex<HashMap<String, HistogramVec>>,
+    counters: DashMap<String, CounterVec>,
+    gauges: DashMap<String, GaugeVec>,
+    histograms: DashMap<String, HistogramVec>,
     /// Maximum number of metrics to prevent memory issues
     max_metrics: usize,
     /// Optional namespace prefix for all metrics
     namespace: Option<String>,
+    /// Atomic counter for total metrics across all types
+    metric_count: AtomicUsize,
 }
 
-impl PrometheusExporter {
-    pub fn new() -> Self {
+impl PrometheusExporter {    pub fn new() -> Self {
         let registry = Registry::new();
         Self {
             registry,
-            counters: Mutex::new(HashMap::new()),
-            gauges: Mutex::new(HashMap::new()),
-            histograms: Mutex::new(HashMap::new()),
+            counters: DashMap::new(),
+            gauges: DashMap::new(),
+            histograms: DashMap::new(),
             max_metrics: 1000, // Default limit
             namespace: None,
+            metric_count: AtomicUsize::new(0),
         }
-    }
-
-    /// Create a new PrometheusExporter with custom max metrics limit
+    }    /// Create a new PrometheusExporter with custom max metrics limit
     #[allow(dead_code)] // May be used in configuration scenarios
     pub fn with_max_metrics(max_metrics: usize) -> Self {
         let registry = Registry::new();
         Self {
             registry,
-            counters: Mutex::new(HashMap::new()),
-            gauges: Mutex::new(HashMap::new()),
-            histograms: Mutex::new(HashMap::new()),
+            counters: DashMap::new(),
+            gauges: DashMap::new(),
+            histograms: DashMap::new(),
             max_metrics,
             namespace: None,
+            metric_count: AtomicUsize::new(0),
         }
-    }
-
-    /// Create a new PrometheusExporter with namespace prefix
+    }    /// Create a new PrometheusExporter with namespace prefix
     #[allow(dead_code)] // May be used in configuration scenarios
     pub fn with_namespace<S: Into<String>>(namespace: S) -> Self {
+        let namespace = namespace.into();
+        // Validate namespace using the same validation as metric names
+        validation::validate_metric_name(&namespace).expect("Invalid namespace");
         let registry = Registry::new();
         Self {
             registry,
-            counters: Mutex::new(HashMap::new()),
-            gauges: Mutex::new(HashMap::new()),
-            histograms: Mutex::new(HashMap::new()),
+            counters: DashMap::new(),
+            gauges: DashMap::new(),
+            histograms: DashMap::new(),
             max_metrics: 1000,
-            namespace: Some(namespace.into()),
+            namespace: Some(namespace),
+            metric_count: AtomicUsize::new(0),
         }
-    }
-
-    /// Create a new PrometheusExporter with both namespace and max metrics
+    }    /// Create a new PrometheusExporter with both namespace and max metrics
     #[allow(dead_code)] // May be used in configuration scenarios
     pub fn with_namespace_and_limits<S: Into<String>>(namespace: S, max_metrics: usize) -> Self {
+        let namespace = namespace.into();
+        // Validate namespace using the same validation as metric names
+        validation::validate_metric_name(&namespace).expect("Invalid namespace");
         let registry = Registry::new();
         Self {
             registry,
-            counters: Mutex::new(HashMap::new()),
-            gauges: Mutex::new(HashMap::new()),
-            histograms: Mutex::new(HashMap::new()),
+            counters: DashMap::new(),
+            gauges: DashMap::new(),
+            histograms: DashMap::new(),
             max_metrics,
-            namespace: Some(namespace.into()),
+            namespace: Some(namespace),
+            metric_count: AtomicUsize::new(0),
         }
     }
 
@@ -102,16 +108,15 @@ impl PrometheusExporter {
             return Err(MetricsError::configuration_error(
                 "PROMETHEUS_MAX_METRICS must be greater than 0",
             ));
-        }
-
-        let registry = Registry::new();
+        }        let registry = Registry::new();
         Ok(Self {
             registry,
-            counters: Mutex::new(HashMap::new()),
-            gauges: Mutex::new(HashMap::new()),
-            histograms: Mutex::new(HashMap::new()),
+            counters: DashMap::new(),
+            gauges: DashMap::new(),
+            histograms: DashMap::new(),
             max_metrics,
             namespace,
+            metric_count: AtomicUsize::new(0),
         })
     }
 
@@ -141,15 +146,15 @@ impl PrometheusExporter {
             .join(" ");
 
         format!("{} - {}", readable_name, metric_type)
-    }
-
-    fn check_resource_limits(&self, current_count: usize) -> Result<(), MetricsError> {
+    }    fn check_resource_limits(&self) -> Result<(), MetricsError> {
+        let current_count = self.metric_count.load(Ordering::SeqCst);
         if current_count >= self.max_metrics {
             return Err(MetricsError::resource_limit_exceeded(format!(
                 "Maximum number of metrics ({}) exceeded",
                 self.max_metrics
             )));
         }
+        self.metric_count.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 
@@ -182,8 +187,7 @@ impl PrometheusExporter {
                 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 25.0, 50.0, 100.0,
             ]
         }
-    }
-    async fn get_or_create_counter(
+    }    async fn get_or_create_counter(
         &self,
         name: &str,
         help: &str,
@@ -191,43 +195,46 @@ impl PrometheusExporter {
     ) -> Result<CounterVec, MetricsError> {
         let name_with_namespace = self.apply_namespace(name);
 
-        // Fast path: check if metric already exists without holding the lock
-        {
-            let counters = self.counters.lock().await;
-            if let Some(counter) = counters.get(&name_with_namespace) {
-                return Ok(counter.clone());
-            }
-        }
-
-        // Slow path: create new metric
-        let mut counters = self.counters.lock().await;
-
-        // Double-check in case another thread created it while we were waiting
-        if let Some(counter) = counters.get(&name_with_namespace) {
+        // Fast path: check if metric already exists
+        if let Some(counter) = self.counters.get(&name_with_namespace) {
             return Ok(counter.clone());
         }
 
         // Check resource limits before creating new metric
-        self.check_resource_limits(counters.len())?;
+        self.check_resource_limits()?;
 
         let opts = Opts::new(&name_with_namespace, help);
         let counter = CounterVec::new(opts, label_names).map_err(|e| {
             MetricsError::registration_failed(name, format!("Failed to create counter: {}", e))
         })?;
 
-        self.registry
-            .register(Box::new(counter.clone()))
-            .map_err(|e| {
-                MetricsError::registration_failed(
-                    name,
-                    format!("Failed to register counter: {}", e),
-                )
-            })?;
-
-        counters.insert(name_with_namespace, counter.clone());
-        Ok(counter)
-    }
-    async fn get_or_create_gauge(
+        // Try to register with Prometheus, handling race conditions
+        match self.registry.register(Box::new(counter.clone())) {
+            Ok(_) => {
+                self.counters.insert(name_with_namespace, counter.clone());
+                Ok(counter)
+            }
+            Err(e) => {
+                // Check if it's a duplicate registration error (race condition)
+                if e.to_string().contains("duplicate") {
+                    // Another thread registered it, fetch the existing one
+                    if let Some(existing_counter) = self.counters.get(&name_with_namespace) {
+                        Ok(existing_counter.clone())
+                    } else {
+                        Err(MetricsError::registration_failed(
+                            name,
+                            "Race condition in counter registration",
+                        ))
+                    }
+                } else {
+                    Err(MetricsError::registration_failed(
+                        name,
+                        format!("Failed to register counter: {}", e),
+                    ))
+                }
+            }
+        }
+    }    async fn get_or_create_gauge(
         &self,
         name: &str,
         help: &str,
@@ -235,40 +242,46 @@ impl PrometheusExporter {
     ) -> Result<GaugeVec, MetricsError> {
         let name_with_namespace = self.apply_namespace(name);
 
-        // Fast path: check if metric already exists without holding the lock
-        {
-            let gauges = self.gauges.lock().await;
-            if let Some(gauge) = gauges.get(&name_with_namespace) {
-                return Ok(gauge.clone());
-            }
-        }
-
-        // Slow path: create new metric
-        let mut gauges = self.gauges.lock().await;
-
-        // Double-check in case another thread created it while we were waiting
-        if let Some(gauge) = gauges.get(&name_with_namespace) {
+        // Fast path: check if metric already exists
+        if let Some(gauge) = self.gauges.get(&name_with_namespace) {
             return Ok(gauge.clone());
         }
 
         // Check resource limits before creating new metric
-        self.check_resource_limits(gauges.len())?;
+        self.check_resource_limits()?;
 
         let opts = Opts::new(&name_with_namespace, help);
         let gauge = GaugeVec::new(opts, label_names).map_err(|e| {
             MetricsError::registration_failed(name, format!("Failed to create gauge: {}", e))
         })?;
 
-        self.registry
-            .register(Box::new(gauge.clone()))
-            .map_err(|e| {
-                MetricsError::registration_failed(name, format!("Failed to register gauge: {}", e))
-            })?;
-
-        gauges.insert(name_with_namespace, gauge.clone());
-        Ok(gauge)
-    }
-    async fn get_or_create_histogram(
+        // Try to register with Prometheus, handling race conditions
+        match self.registry.register(Box::new(gauge.clone())) {
+            Ok(_) => {
+                self.gauges.insert(name_with_namespace, gauge.clone());
+                Ok(gauge)
+            }
+            Err(e) => {
+                // Check if it's a duplicate registration error (race condition)
+                if e.to_string().contains("duplicate") {
+                    // Another thread registered it, fetch the existing one
+                    if let Some(existing_gauge) = self.gauges.get(&name_with_namespace) {
+                        Ok(existing_gauge.clone())
+                    } else {
+                        Err(MetricsError::registration_failed(
+                            name,
+                            "Race condition in gauge registration",
+                        ))
+                    }
+                } else {
+                    Err(MetricsError::registration_failed(
+                        name,
+                        format!("Failed to register gauge: {}", e),
+                    ))
+                }
+            }
+        }
+    }    async fn get_or_create_histogram(
         &self,
         name: &str,
         help: &str,
@@ -276,24 +289,13 @@ impl PrometheusExporter {
     ) -> Result<HistogramVec, MetricsError> {
         let name_with_namespace = self.apply_namespace(name);
 
-        // Fast path: check if metric already exists without holding the lock
-        {
-            let histograms = self.histograms.lock().await;
-            if let Some(histogram) = histograms.get(&name_with_namespace) {
-                return Ok(histogram.clone());
-            }
-        }
-
-        // Slow path: create new metric
-        let mut histograms = self.histograms.lock().await;
-
-        // Double-check in case another thread created it while we were waiting
-        if let Some(histogram) = histograms.get(&name_with_namespace) {
+        // Fast path: check if metric already exists
+        if let Some(histogram) = self.histograms.get(&name_with_namespace) {
             return Ok(histogram.clone());
         }
 
         // Check resource limits before creating new metric
-        self.check_resource_limits(histograms.len())?;
+        self.check_resource_limits()?;
 
         // Configure explicit histogram buckets for better observability
         let buckets = Self::get_histogram_buckets(name);
@@ -302,36 +304,52 @@ impl PrometheusExporter {
             MetricsError::registration_failed(name, format!("Failed to create histogram: {}", e))
         })?;
 
-        self.registry
-            .register(Box::new(histogram.clone()))
-            .map_err(|e| {
-                MetricsError::registration_failed(
-                    name,
-                    format!("Failed to register histogram: {}", e),
-                )
-            })?;
-
-        histograms.insert(name_with_namespace, histogram.clone());
-        Ok(histogram)
-    }
-
-    fn extract_label_names_and_values<'a>(
+        // Try to register with Prometheus, handling race conditions
+        match self.registry.register(Box::new(histogram.clone())) {
+            Ok(_) => {
+                self.histograms.insert(name_with_namespace, histogram.clone());
+                Ok(histogram)
+            }
+            Err(e) => {
+                // Check if it's a duplicate registration error (race condition)
+                if e.to_string().contains("duplicate") {
+                    // Another thread registered it, fetch the existing one
+                    if let Some(existing_histogram) = self.histograms.get(&name_with_namespace) {
+                        Ok(existing_histogram.clone())
+                    } else {
+                        Err(MetricsError::registration_failed(
+                            name,
+                            "Race condition in histogram registration",
+                        ))
+                    }
+                } else {
+                    Err(MetricsError::registration_failed(
+                        name,
+                        format!("Failed to register histogram: {}", e),
+                    ))
+                }
+            }
+        }
+    }fn extract_label_names_and_values<'a>(
         labels: &'a [(&'a str, &'a str)],
-    ) -> (Vec<&'a str>, Vec<&'a str>) {
+    ) -> Result<(Vec<&'a str>, Vec<&'a str>), MetricsError> {
         let label_names: Vec<&str> = labels.iter().map(|(k, _)| *k).collect();
+        let unique_names: HashSet<&str> = label_names.iter().copied().collect();        if unique_names.len() != label_names.len() {
+            return Err(MetricsError::invalid_label(
+                "labels",
+                "Duplicate label names detected",
+            ));
+        }
         let label_values: Vec<&str> = labels.iter().map(|(_, v)| *v).collect();
-        (label_names, label_values)
-    }
-
-    /// Remove a counter metric
+        Ok((label_names, label_values))
+    }    /// Remove a counter metric. Use with caution, as removing metrics can disrupt Prometheus time-series data.
     #[allow(dead_code)] // May be used for cleanup scenarios
     pub async fn remove_counter(&self, name: &str) -> Result<(), MetricsError> {
         validation::validate_metric_name(name)?;
 
         let name_with_namespace = self.apply_namespace(name);
-        let mut counters = self.counters.lock().await;
 
-        if let Some(counter) = counters.remove(&name_with_namespace) {
+        if let Some((_, counter)) = self.counters.remove(&name_with_namespace) {
             // Unregister from Prometheus registry
             if let Err(e) = self.registry.unregister(Box::new(counter)) {
                 return Err(MetricsError::export_failed(format!(
@@ -342,17 +360,14 @@ impl PrometheusExporter {
             debug!("Removed counter metric: {}", name);
         }
         Ok(())
-    }
-
-    /// Remove a gauge metric
+    }    /// Remove a gauge metric. Use with caution, as removing metrics can disrupt Prometheus time-series data.
     #[allow(dead_code)] // May be used for cleanup scenarios
     pub async fn remove_gauge(&self, name: &str) -> Result<(), MetricsError> {
         validation::validate_metric_name(name)?;
 
         let name_with_namespace = self.apply_namespace(name);
-        let mut gauges = self.gauges.lock().await;
 
-        if let Some(gauge) = gauges.remove(&name_with_namespace) {
+        if let Some((_, gauge)) = self.gauges.remove(&name_with_namespace) {
             // Unregister from Prometheus registry
             if let Err(e) = self.registry.unregister(Box::new(gauge)) {
                 return Err(MetricsError::export_failed(format!(
@@ -363,17 +378,14 @@ impl PrometheusExporter {
             debug!("Removed gauge metric: {}", name);
         }
         Ok(())
-    }
-
-    /// Remove a histogram metric
+    }    /// Remove a histogram metric. Use with caution, as removing metrics can disrupt Prometheus time-series data.
     #[allow(dead_code)] // May be used for cleanup scenarios
     pub async fn remove_histogram(&self, name: &str) -> Result<(), MetricsError> {
         validation::validate_metric_name(name)?;
 
         let name_with_namespace = self.apply_namespace(name);
-        let mut histograms = self.histograms.lock().await;
 
-        if let Some(histogram) = histograms.remove(&name_with_namespace) {
+        if let Some((_, histogram)) = self.histograms.remove(&name_with_namespace) {
             // Unregister from Prometheus registry
             if let Err(e) = self.registry.unregister(Box::new(histogram)) {
                 return Err(MetricsError::export_failed(format!(
@@ -384,19 +396,16 @@ impl PrometheusExporter {
             debug!("Removed histogram metric: {}", name);
         }
         Ok(())
-    }
-
-    /// Remove all metrics (cleanup method)
+    }    /// Remove all metrics (cleanup method)
     #[allow(dead_code)] // May be used for cleanup scenarios
     pub async fn clear_all_metrics(&self) -> Result<(), MetricsError> {
-        let mut counters = self.counters.lock().await;
-        let mut gauges = self.gauges.lock().await;
-        let mut histograms = self.histograms.lock().await;
-
         // Clear all internal collections
-        counters.clear();
-        gauges.clear();
-        histograms.clear();
+        self.counters.clear();
+        self.gauges.clear();
+        self.histograms.clear();
+
+        // Reset the metric count
+        self.metric_count.store(0, Ordering::SeqCst);
 
         // Note: Prometheus Registry doesn't have a clear_all method
         // So we create a new registry for complete cleanup
@@ -406,12 +415,11 @@ impl PrometheusExporter {
 }
 
 #[async_trait]
-impl MetricsExporter for PrometheusExporter {
-    async fn increment(&self, name: &str, labels: &[(&str, &str)]) -> Result<(), MetricsError> {
+impl MetricsExporter for PrometheusExporter {    async fn increment(&self, name: &str, labels: &[(&str, &str)]) -> Result<(), MetricsError> {
         // Validate inputs first
         validation::validate_metric_name(name)?;
         validation::validate_labels(labels)?;
-        let (label_names, label_values) = Self::extract_label_names_and_values(labels);
+        let (label_names, label_values) = Self::extract_label_names_and_values(labels)?;
         let help_text =
             Self::generate_help_text(name, "counter metric tracking incremental values");
         let counter = self
@@ -428,9 +436,7 @@ impl MetricsExporter for PrometheusExporter {
         metric.inc();
         debug!("Incremented counter {} with labels {:?}", name, labels);
         Ok(())
-    }
-
-    async fn set_gauge(
+    }    async fn set_gauge(
         &self,
         name: &str,
         value: f64,
@@ -440,7 +446,7 @@ impl MetricsExporter for PrometheusExporter {
         validation::validate_metric_name(name)?;
         validation::validate_labels(labels)?;
         validation::validate_numeric_value(value)?;
-        let (label_names, label_values) = Self::extract_label_names_and_values(labels);
+        let (label_names, label_values) = Self::extract_label_names_and_values(labels)?;
         let help_text = Self::generate_help_text(name, "gauge metric tracking current values");
         let gauge = self
             .get_or_create_gauge(name, &help_text, &label_names)
@@ -456,9 +462,7 @@ impl MetricsExporter for PrometheusExporter {
         metric.set(value);
         debug!("Set gauge {} to {} with labels {:?}", name, value, labels);
         Ok(())
-    }
-
-    async fn observe_histogram(
+    }    async fn observe_histogram(
         &self,
         name: &str,
         value: f64,
@@ -468,7 +472,7 @@ impl MetricsExporter for PrometheusExporter {
         validation::validate_metric_name(name)?;
         validation::validate_labels(labels)?;
         validation::validate_numeric_value(value)?;
-        let (label_names, label_values) = Self::extract_label_names_and_values(labels);
+        let (label_names, label_values) = Self::extract_label_names_and_values(labels)?;
         let help_text =
             Self::generate_help_text(name, "histogram metric tracking value distributions");
         let histogram = self

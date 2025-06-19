@@ -34,6 +34,7 @@ The Whisper API is a high-performance HTTP service built in Rust using Actix-web
 - `GET /transcription/{job_id}/result`: Retrieve completed transcription
 - `DELETE /transcription/{job_id}`: Cancel pending job
 - `GET /status`: Get API configuration and queue statistics
+- `OPTIONS /transcription`: Get available methods and CORS headers
 
 ## Technical Implementation
 - Thread-safe queue management with `Arc<Mutex<>>` and Tokio async runtime
@@ -42,6 +43,7 @@ The Whisper API is a high-performance HTTP service built in Rust using Actix-web
 - Automatic job expiration and cleanup system
 - Multi-layered file security and privacy protection
 - Real-time configuration visibility and monitoring capabilities
+- CORS support with pre-flight request handling via OPTIONS
 
 ## Deployment Requirements
 - Rust with Tokio async runtime

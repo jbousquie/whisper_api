@@ -4,7 +4,7 @@
 // It implements the actual HTTP endpoints for the API.
 
 use actix_multipart::Multipart;
-use actix_web::{delete, get, post, web, HttpResponse};
+use actix_web::{delete, get, options, post, web, HttpRequest, HttpResponse};
 use log::{error, info, warn};
 use serde::Serialize;
 use std::env;
@@ -383,6 +383,27 @@ pub async fn transcription_result(
     }
 
     Ok(HttpResponse::Ok().json(result))
+}
+
+/// Handler for OPTIONS requests to the transcription endpoint
+///
+/// This endpoint returns the available HTTP methods and CORS headers for the /transcription resource.
+/// It respects the authorization configuration, ensuring consistent security across all endpoint methods.
+#[options("/transcription")]
+pub async fn transcription_options(_req: HttpRequest) -> HttpResponse {
+    // List all supported methods for this endpoint
+    let allowed_methods = "OPTIONS, POST, GET, DELETE";
+
+    // Return appropriate headers
+    HttpResponse::Ok()
+        .append_header(("Allow", allowed_methods))
+        .append_header(("Access-Control-Allow-Methods", allowed_methods))
+        .append_header((
+            "Access-Control-Allow-Headers",
+            "Authorization, Content-Type",
+        ))
+        .append_header(("Access-Control-Max-Age", "86400")) // Cache preflight for 24 hours
+        .finish()
 }
 
 /// Handler for canceling a transcription job

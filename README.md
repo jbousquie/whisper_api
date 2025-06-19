@@ -107,6 +107,29 @@ Authentication can be disabled by setting `ENABLE_AUTHORIZATION=false` in the co
 
 ## API Endpoints
 
+### OPTIONS for Transcription Resource
+
+```
+OPTIONS /transcription
+```
+
+**Description**: Returns the available HTTP methods and CORS headers for the /transcription resource. This endpoint is always accessible regardless of authentication settings to support CORS pre-flight requests.
+
+**Response Headers**:
+- `Allow`: Lists all available HTTP methods for the resource
+- `Access-Control-Allow-Methods`: Same as Allow header, for CORS
+- `Access-Control-Allow-Headers`: Lists allowed headers, including Authorization and Content-Type
+- `Access-Control-Max-Age`: Caching duration for preflight response (86400 seconds = 24 hours)
+
+**Response**:
+```
+HTTP/1.1 200 OK
+Allow: OPTIONS, POST, GET, DELETE
+Access-Control-Allow-Methods: OPTIONS, POST, GET, DELETE
+Access-Control-Allow-Headers: Authorization, Content-Type
+Access-Control-Max-Age: 86400
+```
+
 ### Submit a Transcription Job
 
 ```

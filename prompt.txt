@@ -17,7 +17,7 @@ The project follows a clean, modular architecture with clear separation of conce
 - **HTTP Handlers Module (`handlers/`)**: Contains endpoint implementations:
   - `authentication.rs`: Token-based auth middleware
   - `form.rs`: Multipart form processing
-  - `routes.rs`: API endpoint handlers (transcription, status, etc.)
+  - `routes.rs`: API endpoint handlers (transcription, status, OPTIONS requests, etc.)
   - `mod.rs`: Module organization and exports
 
 ## Key Components
@@ -88,6 +88,7 @@ The API implements a token-based authentication system via middleware:
 - Uses middleware pattern for request interception
 - Currently implements a stub validation (accepts any token)
 - Designed for easy extension to real token validation
+- Automatically bypasses authentication for OPTIONS requests to support CORS pre-flight
 
 ### 5. File Security and Privacy
 
@@ -171,11 +172,13 @@ The server is built on Actix-web with configurable settings:
 - Proper error responses with appropriate HTTP status codes
 - Standardized response formats
 - Unified status endpoint for configuration visibility
+- CORS support via OPTIONS method handlers
 
 ## Request Processing Flow
 
 1. **Authentication Check**:
    - Middleware validates Authorization header (if enabled)
+   - OPTIONS requests bypass authentication to support CORS pre-flight
 
 2. **Form Processing**:
    - Extracts and validates form data (audio file, parameters)
@@ -197,6 +200,7 @@ The server is built on Actix-web with configurable settings:
    - For async: Returns job ID and status URL
    - For sync: Returns transcription result directly
    - For status: Returns API configuration and queue statistics
+   - For OPTIONS: Returns allowed methods and CORS headers
 
 6. **API Status**:
    - Provides configuration information (host, port, worker count)

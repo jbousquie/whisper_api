@@ -18,8 +18,8 @@ mod queue_manager;
 // Import the types we need
 use config::HandlerConfig;
 use handlers::{
-    api_status, cancel_transcription, transcribe, transcription_result, transcription_status,
-    Authentication,
+    api_status, cancel_transcription, transcribe, transcription_options, transcription_result,
+    transcription_status, Authentication,
 };
 use queue_manager::{QueueManager, WhisperConfig};
 
@@ -176,6 +176,7 @@ async fn main() -> std::io::Result<()> {
             .service(transcription_status)
             .service(transcription_result)
             .service(cancel_transcription)
+            .service(transcription_options)
     })
     .bind(format!("{}:{}", host, port))?
     .client_disconnect_timeout(timeout)

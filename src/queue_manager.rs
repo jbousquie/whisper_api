@@ -329,8 +329,20 @@ impl QueueManager {
                     state_guard
                         .statuses
                         .insert(job_id.clone(), JobStatus::Processing);
-                    state_guard.processing_count += 1;
                     state_guard.processing_jobs.insert(job_id.clone());
+
+                    // Set processing_count directly to the actual size of processing_jobs
+                    state_guard.processing_count = state_guard.processing_jobs.len();
+
+                    info!(
+                        "Job {} status updated to Processing. Processing count: {}, Processing jobs: {}",
+                        job_id, state_guard.processing_count, state_guard.processing_jobs.len()
+                    );
+
+                    // Debug dump the processing set
+                    let job_list: Vec<String> =
+                        state_guard.processing_jobs.iter().cloned().collect();
+                    info!("Current processing jobs: {:?}", job_list);
                 }
 
                 // Spawn a task for this job
@@ -365,9 +377,20 @@ impl QueueManager {
                             }
                         }
 
-                        // Update processing count and remove from processing set
-                        state_guard.processing_count -= 1;
-                        state_guard.processing_jobs.remove(&job_id);
+                        // IMPORTANT: First remove the job from the processing set
+                        let removed = state_guard.processing_jobs.remove(&job_id);
+                        info!("Removed job {} from processing set: {}", job_id, removed);
+
+                        // CRITICAL: Set processing count to EXACTLY match the processing_jobs set size
+                        state_guard.processing_count = state_guard.processing_jobs.len();
+
+                        // Debug dump the processing set after removal
+                        let job_list: Vec<String> =
+                            state_guard.processing_jobs.iter().cloned().collect();
+                        info!(
+                            "Job {} finished processing. Remaining processing count: {}, processing jobs: {:?}",
+                            job_id, state_guard.processing_count, job_list
+                        );
 
                         // Check for more jobs if we haven't hit our concurrency limit
                         Self::check_and_start_next_jobs(
@@ -392,6 +415,28 @@ impl QueueManager {
         enable_concurrency: bool,
         max_concurrent_jobs: usize,
     ) {
+        // Log current queue state for debugging
+        info!(
+            "Checking for next jobs. Queue size: {}, Processing count: {}",
+            state_guard.queue.len(),
+            state_guard.processing_count
+        );
+
+        // CRITICAL FIX: Always ensure processing_count exactly matches processing_jobs.len()
+        let old_count = state_guard.processing_count;
+        state_guard.processing_count = state_guard.processing_jobs.len();
+
+        if old_count != state_guard.processing_count {
+            warn!(
+                "Fixed inconsistent processing count! Was: {}, Now: {}",
+                old_count, state_guard.processing_count
+            );
+
+            // Debug dump the processing set
+            let job_list: Vec<String> = state_guard.processing_jobs.iter().cloned().collect();
+            info!("Current processing jobs: {:?}", job_list);
+        }
+
         let available_slots = if enable_concurrency {
             // In concurrent mode, check if we have capacity for more jobs
             max_concurrent_jobs.saturating_sub(state_guard.processing_count)
@@ -404,27 +449,86 @@ impl QueueManager {
             }
         };
 
+        info!(
+            "Available slots for new jobs: {} (processing count: {}, processing jobs: {})",
+            available_slots,
+            state_guard.processing_count,
+            state_guard.processing_jobs.len()
+        );
+
         // Start as many jobs as we have slots for
         for _ in 0..available_slots {
             if let Some(next_job) = state_guard.queue.pop_front() {
-                // Update processing count and set
+                // Update job status to Processing before sending
                 let job_id = next_job.id.clone();
-                state_guard.processing_count += 1;
-                state_guard.processing_jobs.insert(job_id.clone());
-                state_guard.statuses.insert(job_id, JobStatus::Processing);
+                info!("Starting next job from queue: {}", job_id);
+                state_guard
+                    .statuses
+                    .insert(job_id.clone(), JobStatus::Processing);
+                state_guard.processing_jobs.insert(job_id);
 
                 // Clone the job before releasing lock
                 let job_to_send = next_job.clone();
 
-                // Send job to processor
-                let job_tx_clone = job_tx.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = job_tx_clone.send(job_to_send).await {
-                        error!("Failed to send job to processor: {}", e);
+                // IMPORTANT: Add to processing_jobs first, then try to send the job
+                // We'll update processing_count directly from processing_jobs
+
+                // The job should already be in processing_jobs and marked as Processing
+                // Double check to make sure
+                if !state_guard.processing_jobs.contains(&next_job.id) {
+                    error!(
+                        "Job {} missing from processing_jobs set before sending!",
+                        next_job.id
+                    );
+                    state_guard.processing_jobs.insert(next_job.id.clone());
+                }
+
+                // Always keep processing_count in sync with the actual set size
+                state_guard.processing_count = state_guard.processing_jobs.len();
+
+                // Now try to send the job
+                match job_tx.try_send(job_to_send) {
+                    Ok(_) => {
+                        info!(
+                            "Job {} sent to processor. Current processing count: {}, Jobs: {}",
+                            next_job.id,
+                            state_guard.processing_count,
+                            state_guard.processing_jobs.len()
+                        );
                     }
-                });
+                    Err(e) => {
+                        error!("Failed to send job to processor: {}", e);
+
+                        // Revert the job status since we couldn't send it
+                        state_guard
+                            .statuses
+                            .insert(next_job.id.clone(), JobStatus::Queued);
+
+                        // Remove from processing set
+                        let removed = state_guard.processing_jobs.remove(&next_job.id);
+                        error!(
+                            "Removed failed job {} from processing set: {}",
+                            next_job.id, removed
+                        );
+
+                        // Update processing count to match actual set size
+                        state_guard.processing_count = state_guard.processing_jobs.len();
+
+                        // Put the job back at the front of the queue
+                        state_guard.queue.push_front(next_job);
+
+                        error!(
+                            "Job send failed and returned to queue. Processing count now: {}",
+                            state_guard.processing_count
+                        );
+                    }
+                }
             } else {
                 // No more jobs in queue
+                info!(
+                    "No more jobs in queue to process. Processing count: {}",
+                    state_guard.processing_count
+                );
                 break;
             }
         }

@@ -4,7 +4,6 @@
 //! requests asynchronously. It supports both sequential processing (one job at a time) and concurrent
 //! processing (multiple jobs simultaneously) to optimize WhisperX resource utilization.
 
-
 use crate::metrics::error::validation;
 use crate::metrics::metrics::Metrics;
 
@@ -269,19 +268,13 @@ impl QueueManager {
             .ok()
             .and_then(|s| s.parse::<usize>().ok())
             .unwrap_or(6);
-
         // Initialize internal state
         let state = Arc::new(Mutex::new(QueueState {
             queue: VecDeque::new(),
             statuses: HashMap::new(),
             results: HashMap::new(),
-//TOFIX           <<<<<<< Add-metrics
-
-//TOFIX =======
-//>>>>>>> main
             processing_count: 0,             // Initially not processing any job
             processing_jobs: HashSet::new(), // No jobs being processed
-
             job_metadata: HashMap::new(),
             sync_jobs: HashMap::new(),
         }));
@@ -575,20 +568,15 @@ impl QueueManager {
                     }
                 }
             } else {
-//TOFIX <<<<<<< Add-metrics
-                break; // No more jobs in queue
-//=======
                 // No more jobs in queue
                 info!(
                     "No more jobs in queue to process. Processing count: {}",
                     state_guard.processing_count
                 );
                 break;
-//>>>>>>> main
             }
         }
     }
-
     /// Process a transcription job by invoking WhisperX
     async fn process_transcription(
         job: TranscriptionJob,
@@ -596,25 +584,15 @@ impl QueueManager {
         state: Arc<Mutex<QueueState>>,
         metrics: &Metrics,
     ) -> Result<TranscriptionResult, QueueError> {
-//TOFIX <<<<<<< Add-metrics
         let start_time = std::time::Instant::now();
         let job_id = job.id.clone();
 
         debug!("Processing job {}", job.id);
-//=======
-        use log::{debug, warn};
-        use std::fs;
-        debug!(
-            "Processing job {} (concurrent: {})",
-            job.id,
-            std::env::var("ENABLE_CONCURRENCY").unwrap_or_else(|_| "false".to_string())
-        );
 
         // Store audio file path for cleanup at the end
         let audio_file_path = job.audio_file.clone();
 
-        // Validate output format if provided
-        // This determines the output file format (e.g., srt, vtt, txt, json)
+        // Determine output format
         let output_format = match &job.output_format {
             Some(format) => {
                 WhisperConfig::validate_output_format(format.as_str())?;
@@ -622,16 +600,6 @@ impl QueueManager {
             }
             None => &config.output_format,
         };
-//TOFIX >>>>>>> main
-
-        // Determine output format
-        let output_format = job
-            .output_format
-            .as_deref()
-            .unwrap_or(&config.output_format);
-
-        // Validate the output format
-        WhisperConfig::validate_output_format(output_format)?;
 
         // Build WhisperX command
         let mut cmd = Command::new(&config.command_path);
@@ -645,22 +613,18 @@ impl QueueManager {
             .arg("--output_format")
             .arg(output_format);
 
-//TOFIX <<<<<<< Add-metrics
-        // Add diarization if token is provided
-//TOFIX======
         // Add device parameter if provided, otherwise use config default
         let device = job.device.as_ref().map_or_else(|| &config.device, |d| d);
-        command.arg("--device").arg(device);
+        cmd.arg("--device").arg(device);
 
         // Add device_index parameter if provided, otherwise use config default
         let device_index = job
             .device_index
             .as_ref()
             .map_or_else(|| &config.device_index, |d| d);
-        command.arg("--device_index").arg(device_index);
+        cmd.arg("--device_index").arg(device_index);
 
         // Add diarization if requested
-//>>>>>>> main
         if job.diarize {
             if let Some(token) = &job.hf_token {
                 cmd.arg("--diarize").arg("--hf_token").arg(token);
@@ -674,7 +638,6 @@ impl QueueManager {
 
         debug!("Executing WhisperX command: {:?}", cmd);
 
-//TOFIX <<<<<<< Add-metrics
         // Execute WhisperX command
         let output = cmd.output().map_err(|e| {
             QueueError::TranscriptionError(format!("Failed to execute WhisperX command: {}", e))
@@ -695,9 +658,10 @@ impl QueueManager {
             .ok_or_else(|| QueueError::TranscriptionError("Invalid audio file name".to_string()))?;
 
         let output_file_name = format!("{}.{}", audio_filename.to_string_lossy(), output_format);
+
         let output_file_path = Path::new(&config.output_dir).join(&output_file_name);
-//TOFIX =======
-        let output = command.output().map_err(|e| {
+
+        let output = cmd.output().map_err(|e| {
             // Attempt to clean up audio file on command execution error
             if let Err(err) = fs::remove_file(&audio_file_path) {
                 warn!(
@@ -706,11 +670,11 @@ impl QueueManager {
                     err
                 );
             }
-            QueueError::TranscriptionError(format!("Failed to run command: {}", e))
+            QueueError::TranscriptionError(format!("Failed to execute WhisperX command: {}", e))
         })?;
 
         if !output.status.success() {
-            let error = String::from_utf8_lossy(&output.stderr).to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr);
 
             // Attempt to clean up audio file on command failure
             if let Err(err) = fs::remove_file(&audio_file_path) {
@@ -726,10 +690,21 @@ impl QueueManager {
                 );
             }
 
-            return Err(QueueError::TranscriptionError(error));
+            return Err(QueueError::TranscriptionError(format!(
+                "WhisperX command failed: {}",
+                stderr
+            )));
         }
 
-        // Read the result from the output file
+        // Use the output_file_path in metadata tracking
+        {
+            let mut state_guard = state.lock().await;
+            if let Some(metadata) = state_guard.job_metadata.get_mut(&job_id) {
+                metadata.output_file_path = Some(output_file_path.clone());
+            }
+        }
+
+        // Read the output file
         let file_content = fs::read_to_string(&output_file_path).map_err(|e| {
             // Attempt to clean up audio file on read error
             if let Err(err) = fs::remove_file(&audio_file_path) {
@@ -739,7 +714,11 @@ impl QueueManager {
                     err
                 );
             }
-            QueueError::TranscriptionError(format!("Failed to read output file: {}", e))
+            QueueError::TranscriptionError(format!(
+                "Failed to read output file {}: {}",
+                output_file_path.display(),
+                e
+            ))
         })?;
 
         // Copy the transcription result to the job's folder for convenience and persistence
@@ -759,8 +738,6 @@ impl QueueManager {
             }
             QueueError::IoError(e)
         })?;
-// TOFIX >>>>>>> main
-
         // Update job metadata with output file path
         {
             let mut state_guard = state.lock().await;
@@ -781,7 +758,6 @@ impl QueueManager {
         // Create a result file in the job folder for immediate access
         let job_result_path = job.folder_path.join("result.txt");
         fs::write(&job_result_path, &file_content).map_err(|e| QueueError::IoError(e))?;
-
         // Create result with the file content as-is
         let result = TranscriptionResult {
             text: file_content,
@@ -822,81 +798,6 @@ impl QueueManager {
         }
 
         Ok(result)
-    }
-
-    /// Start a background task to periodically clean up old jobs
-    fn start_cleanup_task(queue_manager: Arc<Mutex<Self>>) {
-        tokio::spawn(async move {
-            let cleanup_interval = Duration::from_secs(
-                std::env::var(ENV_CLEANUP_INTERVAL_HOURS)
-                    .ok()
-                    .and_then(|s| s.parse::<u64>().ok())
-                    .unwrap_or(DEFAULT_CLEANUP_INTERVAL_HOURS)
-                    * 3600,
-            );
-
-            let max_age = Duration::from_secs(
-                std::env::var(ENV_JOB_RETENTION_HOURS)
-                    .ok()
-                    .and_then(|s| s.parse::<u64>().ok())
-                    .unwrap_or(DEFAULT_JOB_RETENTION_HOURS)
-                    * 3600,
-            );
-
-            info!(
-                "Starting cleanup task with interval: {:?}, max age: {:?}",
-                cleanup_interval, max_age
-            );
-            let mut interval = tokio::time::interval(cleanup_interval);
-            loop {
-                interval.tick().await;
-
-                let manager = queue_manager.lock().await;
-                match manager.cleanup_old_jobs(max_age).await {
-                    Ok(count) => {
-                        if count > 0 {
-                            info!("Cleaned up {} old jobs", count);
-                        }
-                    }
-                    Err(e) => {
-                        error!("Failed to clean up old jobs: {}", e);
-                    }
-                }
-            }
-        });
-    }
-
-    /// Clean up jobs older than the specified duration
-    async fn cleanup_old_jobs(&self, max_age: Duration) -> Result<usize, QueueError> {
-        let now = SystemTime::now();
-        let mut cleaned_count = 0;
-        let mut jobs_to_clean = Vec::new();
-
-        // Identify jobs to clean up
-        {
-            let state = self.state.lock().await;
-            for (job_id, metadata) in &state.job_metadata {
-                if let Ok(age) = now.duration_since(metadata.created_at) {
-                    if age > max_age {
-                        // Only clean up completed or failed jobs
-                        if let Some(status) = state.statuses.get(job_id) {
-                            if matches!(status, JobStatus::Completed | JobStatus::Failed(_)) {
-                                jobs_to_clean.push(job_id.clone());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Clean up identified jobs
-        for job_id in jobs_to_clean {
-            if let Ok(()) = self.cleanup_job(&job_id).await {
-                cleaned_count += 1;
-            }
-        }
-
-        Ok(cleaned_count)
     }
     /// Add a job to the queue
     /// This is the entry point for new transcription requests
@@ -972,17 +873,13 @@ impl QueueManager {
                 // Add job to queue (FIFO order) and update status
                 state.queue.push_back(job);
                 state.statuses.insert(job_id.clone(), JobStatus::Queued);
-
                 info!(
                     "Job {} added to queue (position: {})",
                     job_id,
                     state.queue.len()
                 );
-// TOFIX <<<<<<< Add-metrics
 
                 state.queue.len()
-//=======
-//>>>>>>> main
             }
         }; // Lock is automatically released when state goes out of scope
 
@@ -1166,12 +1063,9 @@ impl QueueManager {
                     // Remove job from tracking
                     state.statuses.remove(job_id);
                     state.results.remove(job_id);
-                    state.job_metadata.remove(job_id);
-
-                    // Drop the lock before filesystem operations
+                    state.job_metadata.remove(job_id); // Drop the lock before filesystem operations
                     drop(state);
 
-//TOFIX <<<<<<< Add-metrics
                     // Record cancellation metrics if we found the job
                     if let Some(job) = job_for_metrics {
                         self.metrics
@@ -1179,8 +1073,6 @@ impl QueueManager {
                             .await;
                     }
 
-                    // Remove job files if we have a path
-//=======
                     // Explicitly remove the audio file first if path is available
                     if let Some(audio_path) = audio_file {
                         // Try to delete the audio file first
@@ -1193,10 +1085,7 @@ impl QueueManager {
                         } else {
                             debug!("Successfully removed audio file: {}", audio_path.display());
                         }
-                    }
-
-                    // Remove job directory if we have a path
-//>>>>>>> main
+                    } // Remove job directory if we have a path
                     if let Some(path) = folder_path {
                         if let Err(e) = fs::remove_dir_all(&path) {
                             error!("Failed to remove folder for canceled job {}: {}", job_id, e);
@@ -1224,20 +1113,7 @@ impl QueueManager {
             Err(QueueError::JobNotFound(job_id.to_string()))
         }
     }
-
     /// Clean up a job and its resources
-    /// Get the current size of the job queue (number of queued jobs)
-    pub async fn get_queue_size(&self) -> usize {
-        let state = self.state.lock().await;
-        state.queue.len()
-    }
-
-    /// Get the number of jobs currently being processed
-    pub async fn get_processing_count(&self) -> usize {
-        let state = self.state.lock().await;
-        state.processing_count
-    }
-
     pub async fn cleanup_job(&self, job_id: &str) -> Result<(), QueueError> {
         let mut state = self.state.lock().await;
 
@@ -1319,5 +1195,90 @@ impl QueueManager {
         } else {
             Err(QueueError::JobNotFound(job_id.to_string()))
         }
+    }
+
+    /// Start a background task to periodically clean up old jobs
+    fn start_cleanup_task(queue_manager: Arc<Mutex<Self>>) {
+        tokio::spawn(async move {
+            let cleanup_interval = Duration::from_secs(
+                std::env::var(ENV_CLEANUP_INTERVAL_HOURS)
+                    .ok()
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(DEFAULT_CLEANUP_INTERVAL_HOURS)
+                    * 3600,
+            );
+
+            let max_age = Duration::from_secs(
+                std::env::var(ENV_JOB_RETENTION_HOURS)
+                    .ok()
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(DEFAULT_JOB_RETENTION_HOURS)
+                    * 3600,
+            );
+
+            info!(
+                "Starting cleanup task with interval: {:?}, max age: {:?}",
+                cleanup_interval, max_age
+            );
+            let mut interval = tokio::time::interval(cleanup_interval);
+            loop {
+                interval.tick().await;
+
+                let manager = queue_manager.lock().await;
+                match manager.cleanup_old_jobs(max_age).await {
+                    Ok(count) => {
+                        if count > 0 {
+                            info!("Cleaned up {} old jobs", count);
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to clean up old jobs: {}", e);
+                    }
+                }
+            }
+        });
+    }
+
+    /// Clean up jobs older than the specified duration
+    async fn cleanup_old_jobs(&self, max_age: Duration) -> Result<usize, QueueError> {
+        let now = SystemTime::now();
+        let mut cleaned_count = 0;
+        let mut jobs_to_clean = Vec::new();
+
+        // Identify jobs to clean up
+        {
+            let state = self.state.lock().await;
+            for (job_id, metadata) in &state.job_metadata {
+                if let Ok(age) = now.duration_since(metadata.created_at) {
+                    if age > max_age {
+                        // Only clean up completed or failed jobs
+                        if let Some(status) = state.statuses.get(job_id) {
+                            if matches!(status, JobStatus::Completed | JobStatus::Failed(_)) {
+                                jobs_to_clean.push(job_id.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Clean up identified jobs
+        for job_id in jobs_to_clean {
+            if let Ok(()) = self.cleanup_job(&job_id).await {
+                cleaned_count += 1;
+            }
+        }
+
+        Ok(cleaned_count)
+    }
+    pub async fn get_queue_size(&self) -> usize {
+        let state = self.state.lock().await;
+        state.queue.len()
+    }
+
+    /// Get the number of jobs currently being processed
+    pub async fn get_processing_count(&self) -> usize {
+        let state = self.state.lock().await;
+        state.processing_count
     }
 }

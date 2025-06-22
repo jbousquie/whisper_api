@@ -1,16 +1,11 @@
 
 use actix_web::{middleware::Logger, web, App, HttpResponse, HttpServer};
-use env_logger::Env;
-
-
-
 use chrono::Local;
 use env_logger::{Builder, Env};
 use log::{debug, info, warn};
 use std::fs;
 use std::io::Write;
 use std::path::Path;
-
 
 // Import our modules
 mod config;
@@ -72,7 +67,9 @@ async fn main() -> std::io::Result<()> {
         info!("Configuration loaded from file");
     } else {
         info!("Using environment variables and defaults (no config file loaded)");
-    }    // Load configurations
+    }
+    
+    // Load configurations
     let handler_config = HandlerConfig::default();
     let whisper_config = WhisperConfig::default();
     let metrics_config = MetricsConfig::default();
@@ -211,13 +208,9 @@ async fn main() -> std::io::Result<()> {
             .wrap(Authentication)
             .app_data(web::Data::new(queue_manager.clone()))
             .app_data(web::Data::new(handler_config.clone()))
-// TOFIX NOW
-      <<<<<<< Add-metrics
             .app_data(web::Data::new(metrics.clone()))
             .service(web::resource("/metrics").route(web::get().to(metrics_handler)))
-//TOFIX =======
             .service(api_status)
-//TOFIX >>>>>>> main
             .service(transcribe)
             .service(transcription_status)
             .service(transcription_result)

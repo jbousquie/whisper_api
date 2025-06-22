@@ -2,6 +2,7 @@
 //
 // This module provides authentication middleware for the Whisper API.
 // It verifies that incoming requests have a valid Authorization header when enabled.
+// OPTIONS requests are always allowed to support CORS pre-flight requests.
 
 use actix_web::{
     dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform},
@@ -45,7 +46,6 @@ where
         if !auth_enabled {
             info!("Authentication requirement is disabled via configuration");
         }
-
         ok(AuthenticationMiddleware { service })
     }
 }
@@ -67,6 +67,16 @@ where
 
     forward_ready!(service);
     fn call(&self, req: ServiceRequest) -> Self::Future {
+        // Skip authentication for OPTIONS requests
+        if req.method() == actix_web::http::Method::OPTIONS {
+            debug!("OPTIONS request - bypassing authentication check");
+            let fut = self.service.call(req);
+            return Box::pin(async move {
+                let res = fut.await?;
+                Ok(res)
+            });
+        }
+
         let authenticate_result = authenticate(&req);
 
         // Record authentication attempts - we'll use app_data to get metrics if available
@@ -138,7 +148,6 @@ fn authenticate(req: &ServiceRequest) -> Result<(), Error> {
         return Err(ErrorUnauthorized("Authorization header is required"));
     }
 }
-
 /// Validates a token for authentication
 ///
 /// Currently just returns Ok for any token, but can be extended

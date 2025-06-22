@@ -1,6 +1,6 @@
 [package]
 name = "whisper_api"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "CeCILL-B"
 
@@ -20,5 +20,8 @@ async-trait = "0.1"
 fastrand = "2.0"
 toml = "0.8.23"
 num_cpus = "1.17.0"
-lazy_static = "1.4.0"
 dashmap = "6.0"
+
+lazy_static = "1.5.0"
+chrono = "0.4"
+

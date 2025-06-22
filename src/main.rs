@@ -1,6 +1,16 @@
+
 use actix_web::{middleware::Logger, web, App, HttpResponse, HttpServer};
 use env_logger::Env;
-use log::{info, warn};
+
+
+
+use chrono::Local;
+use env_logger::{Builder, Env};
+use log::{debug, info, warn};
+use std::fs;
+use std::io::Write;
+use std::path::Path;
+
 
 // Import our modules
 mod config;
@@ -17,7 +27,8 @@ use config::{HandlerConfig, MetricsConfig};
 
 // Import the types we need
 use handlers::{
-    cancel_transcription, transcribe, transcription_result, transcription_status, Authentication,
+    api_status, cancel_transcription, transcribe, transcription_options, transcription_result,
+    transcription_status, Authentication,
 };
 use queue_manager::{QueueManager, WhisperConfig};
 
@@ -43,8 +54,18 @@ async fn metrics_handler(metrics: web::Data<Metrics>) -> Result<HttpResponse, ac
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    // Initialize logger
-    env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
+    // Initialize logger with local timezone
+    Builder::from_env(Env::default().default_filter_or("info"))
+        .format(|buf, record| {
+            writeln!(
+                buf,
+                "{} [{}] - {}",
+                Local::now().format("%Y-%m-%d %H:%M:%S%.3f"),
+                record.level(),
+                record.args()
+            )
+        })
+        .init();
 
     // Load configuration from file and environment variables
     if config_loader::load_config() {
@@ -72,10 +93,63 @@ async fn main() -> std::io::Result<()> {
     ).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
     let metrics = Metrics::new(metrics_exporter);
 
-    // Create tmp directory if it doesn't exist
+    // Clean tmp directory and recreate it
     let tmp_dir = &handler_config.temp_dir;
-    if let Err(e) = std::fs::create_dir_all(tmp_dir) {
+    info!("Cleaning temporary directory: {}", tmp_dir);
+
+    // Delete existing temporary directory if it exists
+    if Path::new(tmp_dir).exists() {
+        match fs::remove_dir_all(tmp_dir) {
+            Ok(_) => info!("Successfully removed old temporary directory"),
+            Err(e) => warn!("Failed to remove temporary directory {}: {}", tmp_dir, e),
+        }
+    }
+
+    // Create fresh tmp directory
+    if let Err(e) = fs::create_dir_all(tmp_dir) {
         warn!("Failed to create temp directory {}: {}", tmp_dir, e);
+    } else {
+        info!("Created fresh temporary directory: {}", tmp_dir);
+    }
+
+    // Clean WhisperX output directory
+    let output_dir = &whisper_config.output_dir;
+    info!("Cleaning WhisperX output directory: {}", output_dir);
+
+    // Delete existing output files if directory exists
+    if Path::new(output_dir).exists() {
+        match fs::read_dir(output_dir) {
+            Ok(entries) => {
+                for entry in entries.flatten() {
+                    if let Err(e) = fs::remove_file(entry.path()) {
+                        warn!(
+                            "Failed to remove output file {}: {}",
+                            entry.path().display(),
+                            e
+                        );
+                    } else {
+                        debug!("Removed output file: {}", entry.path().display());
+                    }
+                }
+                info!("Successfully cleaned WhisperX output directory");
+            }
+            Err(e) => warn!(
+                "Failed to read WhisperX output directory {}: {}",
+                output_dir, e
+            ),
+        }
+    }
+
+    // Create WhisperX output directory if it doesn't exist
+    if !Path::new(output_dir).exists() {
+        if let Err(e) = fs::create_dir_all(output_dir) {
+            warn!(
+                "Failed to create WhisperX output directory {}: {}",
+                output_dir, e
+            );
+        } else {
+            info!("Created WhisperX output directory: {}", output_dir);
+        }
     }
 
     // Initialize the queue manager
@@ -137,12 +211,18 @@ async fn main() -> std::io::Result<()> {
             .wrap(Authentication)
             .app_data(web::Data::new(queue_manager.clone()))
             .app_data(web::Data::new(handler_config.clone()))
+// TOFIX NOW
+      <<<<<<< Add-metrics
             .app_data(web::Data::new(metrics.clone()))
             .service(web::resource("/metrics").route(web::get().to(metrics_handler)))
+//TOFIX =======
+            .service(api_status)
+//TOFIX >>>>>>> main
             .service(transcribe)
             .service(transcription_status)
             .service(transcription_result)
             .service(cancel_transcription)
+            .service(transcription_options)
     })
     .bind(format!("{}:{}", host, port))?
     .client_disconnect_timeout(timeout)

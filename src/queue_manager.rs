@@ -4,8 +4,12 @@
 //! requests asynchronously. It supports both sequential processing (one job at a time) and concurrent
 //! processing (multiple jobs simultaneously) to optimize WhisperX resource utilization.
 
+
 use crate::metrics::error::validation;
 use crate::metrics::metrics::Metrics;
+
+use crate::config::defaults;
+
 use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -34,6 +38,8 @@ const ENV_JOB_RETENTION_HOURS: &str = "WHISPER_JOB_RETENTION_HOURS";
 const ENV_CLEANUP_INTERVAL_HOURS: &str = "WHISPER_CLEANUP_INTERVAL_HOURS";
 const ENV_WHISPER_OUTPUT_DIR: &str = "WHISPER_OUTPUT_DIR";
 const ENV_WHISPER_OUTPUT_FORMAT: &str = "WHISPER_OUTPUT_FORMAT";
+const ENV_WHISPER_DEVICE: &str = "WHISPER_DEVICE";
+const ENV_WHISPER_DEVICE_INDEX: &str = "WHISPER_DEVICE_INDEX";
 
 /// Configuration for the WhisperX command
 #[derive(Clone, Debug)]
@@ -46,6 +52,10 @@ pub struct WhisperConfig {
     pub output_dir: String,
     /// Default output format
     pub output_format: String,
+    /// Device for PyTorch inference (cuda or cpu)
+    pub device: String,
+    /// Device index for inference
+    pub device_index: String,
 }
 
 impl WhisperConfig {
@@ -79,6 +89,10 @@ impl Default for WhisperConfig {
                 output_dir: std::env::var(ENV_WHISPER_OUTPUT_DIR)
                     .unwrap_or_else(|_| String::from(DEFAULT_WHISPER_OUTPUT_DIR)),
                 output_format: DEFAULT_WHISPER_OUTPUT_FORMAT.to_string(),
+                device: std::env::var(ENV_WHISPER_DEVICE)
+                    .unwrap_or_else(|_| String::from(defaults::DEVICE)),
+                device_index: std::env::var(ENV_WHISPER_DEVICE_INDEX)
+                    .unwrap_or_else(|_| String::from(defaults::DEVICE_INDEX)),
             }
         } else {
             Self {
@@ -89,6 +103,10 @@ impl Default for WhisperConfig {
                 output_dir: std::env::var(ENV_WHISPER_OUTPUT_DIR)
                     .unwrap_or_else(|_| String::from(DEFAULT_WHISPER_OUTPUT_DIR)),
                 output_format,
+                device: std::env::var(ENV_WHISPER_DEVICE)
+                    .unwrap_or_else(|_| String::from(defaults::DEVICE)),
+                device_index: std::env::var(ENV_WHISPER_DEVICE_INDEX)
+                    .unwrap_or_else(|_| String::from(defaults::DEVICE_INDEX)),
             }
         }
     }
@@ -134,6 +152,10 @@ pub struct TranscriptionJob {
     pub hf_token: Option<String>,
     /// Output format for transcription results
     pub output_format: Option<String>,
+    /// Device for PyTorch inference (cuda or cpu)
+    pub device: Option<String>,
+    /// Device index for inference when using CUDA
+    pub device_index: Option<String>,
 }
 
 /// Job metadata saved separately from the job itself
@@ -253,7 +275,10 @@ impl QueueManager {
             queue: VecDeque::new(),
             statuses: HashMap::new(),
             results: HashMap::new(),
+//TOFIX           <<<<<<< Add-metrics
 
+//TOFIX =======
+//>>>>>>> main
             processing_count: 0,             // Initially not processing any job
             processing_jobs: HashSet::new(), // No jobs being processed
 
@@ -327,8 +352,20 @@ impl QueueManager {
                     state_guard
                         .statuses
                         .insert(job_id.clone(), JobStatus::Processing);
-                    state_guard.processing_count += 1;
                     state_guard.processing_jobs.insert(job_id.clone());
+
+                    // Set processing_count directly to the actual size of processing_jobs
+                    state_guard.processing_count = state_guard.processing_jobs.len();
+
+                    info!(
+                        "Job {} status updated to Processing. Processing count: {}, Processing jobs: {}",
+                        job_id, state_guard.processing_count, state_guard.processing_jobs.len()
+                    );
+
+                    // Debug dump the processing set
+                    let job_list: Vec<String> =
+                        state_guard.processing_jobs.iter().cloned().collect();
+                    info!("Current processing jobs: {:?}", job_list);
                 }
 
                 // Record current processing count
@@ -378,9 +415,20 @@ impl QueueManager {
                             }
                         }
 
-                        // Update processing count and remove from processing set
-                        state_guard.processing_count -= 1;
-                        state_guard.processing_jobs.remove(&job_id);
+                        // IMPORTANT: First remove the job from the processing set
+                        let removed = state_guard.processing_jobs.remove(&job_id);
+                        info!("Removed job {} from processing set: {}", job_id, removed);
+
+                        // CRITICAL: Set processing count to EXACTLY match the processing_jobs set size
+                        state_guard.processing_count = state_guard.processing_jobs.len();
+
+                        // Debug dump the processing set after removal
+                        let job_list: Vec<String> =
+                            state_guard.processing_jobs.iter().cloned().collect();
+                        info!(
+                            "Job {} finished processing. Remaining processing count: {}, processing jobs: {:?}",
+                            job_id, state_guard.processing_count, job_list
+                        );
 
                         // Check for more jobs if we haven't hit our concurrency limit
                         Self::check_and_start_next_jobs(
@@ -418,6 +466,28 @@ impl QueueManager {
         enable_concurrency: bool,
         max_concurrent_jobs: usize,
     ) {
+        // Log current queue state for debugging
+        info!(
+            "Checking for next jobs. Queue size: {}, Processing count: {}",
+            state_guard.queue.len(),
+            state_guard.processing_count
+        );
+
+        // CRITICAL FIX: Always ensure processing_count exactly matches processing_jobs.len()
+        let old_count = state_guard.processing_count;
+        state_guard.processing_count = state_guard.processing_jobs.len();
+
+        if old_count != state_guard.processing_count {
+            warn!(
+                "Fixed inconsistent processing count! Was: {}, Now: {}",
+                old_count, state_guard.processing_count
+            );
+
+            // Debug dump the processing set
+            let job_list: Vec<String> = state_guard.processing_jobs.iter().cloned().collect();
+            info!("Current processing jobs: {:?}", job_list);
+        }
+
         let available_slots = if enable_concurrency {
             // In concurrent mode, check if we have capacity for more jobs
             max_concurrent_jobs.saturating_sub(state_guard.processing_count)
@@ -430,27 +500,91 @@ impl QueueManager {
             }
         };
 
+        info!(
+            "Available slots for new jobs: {} (processing count: {}, processing jobs: {})",
+            available_slots,
+            state_guard.processing_count,
+            state_guard.processing_jobs.len()
+        );
+
         // Start as many jobs as we have slots for
         for _ in 0..available_slots {
             if let Some(next_job) = state_guard.queue.pop_front() {
-                // Update processing count and set
+                // Update job status to Processing before sending
                 let job_id = next_job.id.clone();
-                state_guard.processing_count += 1;
-                state_guard.processing_jobs.insert(job_id.clone());
-                state_guard.statuses.insert(job_id, JobStatus::Processing);
+                info!("Starting next job from queue: {}", job_id);
+                state_guard
+                    .statuses
+                    .insert(job_id.clone(), JobStatus::Processing);
+                state_guard.processing_jobs.insert(job_id);
 
                 // Clone the job before releasing lock
                 let job_to_send = next_job.clone();
 
-                // Send job to processor
-                let job_tx_clone = job_tx.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = job_tx_clone.send(job_to_send).await {
-                        error!("Failed to send job to processor: {}", e);
+                // IMPORTANT: Add to processing_jobs first, then try to send the job
+                // We'll update processing_count directly from processing_jobs
+
+                // The job should already be in processing_jobs and marked as Processing
+                // Double check to make sure
+                if !state_guard.processing_jobs.contains(&next_job.id) {
+                    error!(
+                        "Job {} missing from processing_jobs set before sending!",
+                        next_job.id
+                    );
+                    state_guard.processing_jobs.insert(next_job.id.clone());
+                }
+
+                // Always keep processing_count in sync with the actual set size
+                state_guard.processing_count = state_guard.processing_jobs.len();
+
+                // Now try to send the job
+                match job_tx.try_send(job_to_send) {
+                    Ok(_) => {
+                        info!(
+                            "Job {} sent to processor. Current processing count: {}, Jobs: {}",
+                            next_job.id,
+                            state_guard.processing_count,
+                            state_guard.processing_jobs.len()
+                        );
                     }
-                });
+                    Err(e) => {
+                        error!("Failed to send job to processor: {}", e);
+
+                        // Revert the job status since we couldn't send it
+                        state_guard
+                            .statuses
+                            .insert(next_job.id.clone(), JobStatus::Queued);
+
+                        // Remove from processing set
+                        let removed = state_guard.processing_jobs.remove(&next_job.id);
+                        error!(
+                            "Removed failed job {} from processing set: {}",
+                            next_job.id, removed
+                        );
+
+                        // Update processing count to match actual set size
+                        state_guard.processing_count = state_guard.processing_jobs.len();
+
+                        // Put the job back at the front of the queue
+                        state_guard.queue.push_front(next_job);
+
+                        error!(
+                            "Job send failed and returned to queue. Processing count now: {}",
+                            state_guard.processing_count
+                        );
+                    }
+                }
             } else {
+//TOFIX <<<<<<< Add-metrics
                 break; // No more jobs in queue
+//=======
+                // No more jobs in queue
+                info!(
+                    "No more jobs in queue to process. Processing count: {}",
+                    state_guard.processing_count
+                );
+                break;
+//>>>>>>> main
             }
         }
     }
@@ -462,10 +596,33 @@ impl QueueManager {
         state: Arc<Mutex<QueueState>>,
         metrics: &Metrics,
     ) -> Result<TranscriptionResult, QueueError> {
+//TOFIX <<<<<<< Add-metrics
         let start_time = std::time::Instant::now();
         let job_id = job.id.clone();
 
         debug!("Processing job {}", job.id);
+//=======
+        use log::{debug, warn};
+        use std::fs;
+        debug!(
+            "Processing job {} (concurrent: {})",
+            job.id,
+            std::env::var("ENABLE_CONCURRENCY").unwrap_or_else(|_| "false".to_string())
+        );
+
+        // Store audio file path for cleanup at the end
+        let audio_file_path = job.audio_file.clone();
+
+        // Validate output format if provided
+        // This determines the output file format (e.g., srt, vtt, txt, json)
+        let output_format = match &job.output_format {
+            Some(format) => {
+                WhisperConfig::validate_output_format(format.as_str())?;
+                format.as_str()
+            }
+            None => &config.output_format,
+        };
+//TOFIX >>>>>>> main
 
         // Determine output format
         let output_format = job
@@ -488,7 +645,22 @@ impl QueueManager {
             .arg("--output_format")
             .arg(output_format);
 
+//TOFIX <<<<<<< Add-metrics
         // Add diarization if token is provided
+//TOFIX======
+        // Add device parameter if provided, otherwise use config default
+        let device = job.device.as_ref().map_or_else(|| &config.device, |d| d);
+        command.arg("--device").arg(device);
+
+        // Add device_index parameter if provided, otherwise use config default
+        let device_index = job
+            .device_index
+            .as_ref()
+            .map_or_else(|| &config.device_index, |d| d);
+        command.arg("--device_index").arg(device_index);
+
+        // Add diarization if requested
+//>>>>>>> main
         if job.diarize {
             if let Some(token) = &job.hf_token {
                 cmd.arg("--diarize").arg("--hf_token").arg(token);
@@ -502,6 +674,7 @@ impl QueueManager {
 
         debug!("Executing WhisperX command: {:?}", cmd);
 
+//TOFIX <<<<<<< Add-metrics
         // Execute WhisperX command
         let output = cmd.output().map_err(|e| {
             QueueError::TranscriptionError(format!("Failed to execute WhisperX command: {}", e))
@@ -523,6 +696,70 @@ impl QueueManager {
 
         let output_file_name = format!("{}.{}", audio_filename.to_string_lossy(), output_format);
         let output_file_path = Path::new(&config.output_dir).join(&output_file_name);
+//TOFIX =======
+        let output = command.output().map_err(|e| {
+            // Attempt to clean up audio file on command execution error
+            if let Err(err) = fs::remove_file(&audio_file_path) {
+                warn!(
+                    "Failed to remove audio file {} after error: {}",
+                    audio_file_path.display(),
+                    err
+                );
+            }
+            QueueError::TranscriptionError(format!("Failed to run command: {}", e))
+        })?;
+
+        if !output.status.success() {
+            let error = String::from_utf8_lossy(&output.stderr).to_string();
+
+            // Attempt to clean up audio file on command failure
+            if let Err(err) = fs::remove_file(&audio_file_path) {
+                warn!(
+                    "Failed to remove audio file {} after error: {}",
+                    audio_file_path.display(),
+                    err
+                );
+            } else {
+                debug!(
+                    "Successfully removed audio file after error: {}",
+                    audio_file_path.display()
+                );
+            }
+
+            return Err(QueueError::TranscriptionError(error));
+        }
+
+        // Read the result from the output file
+        let file_content = fs::read_to_string(&output_file_path).map_err(|e| {
+            // Attempt to clean up audio file on read error
+            if let Err(err) = fs::remove_file(&audio_file_path) {
+                warn!(
+                    "Failed to remove audio file {} after error: {}",
+                    audio_file_path.display(),
+                    err
+                );
+            }
+            QueueError::TranscriptionError(format!("Failed to read output file: {}", e))
+        })?;
+
+        // Copy the transcription result to the job's folder for convenience and persistence
+        // This ensures the result is available even if the main output directory is cleaned
+        // The copied file is named "transcript.{format}" regardless of the input filename
+        let job_result_path = job
+            .folder_path
+            .join(format!("transcript.{}", output_format));
+        fs::write(&job_result_path, &file_content).map_err(|e| {
+            // Attempt to clean up audio file on write error
+            if let Err(err) = fs::remove_file(&audio_file_path) {
+                warn!(
+                    "Failed to remove audio file {} after error: {}",
+                    audio_file_path.display(),
+                    err
+                );
+            }
+            QueueError::IoError(e)
+        })?;
+// TOFIX >>>>>>> main
 
         // Update job metadata with output file path
         {
@@ -567,6 +804,21 @@ impl QueueManager {
                     info!("Notified waiting sync request for job {}", job.id);
                 }
             }
+        }
+
+        // Clean up the audio file immediately after processing
+        if let Err(e) = fs::remove_file(&audio_file_path) {
+            warn!(
+                "Failed to remove audio file {}: {}",
+                audio_file_path.display(),
+                e
+            );
+            // Continue without error - don't fail the job just because cleanup failed
+        } else {
+            debug!(
+                "Successfully removed audio file: {}",
+                audio_file_path.display()
+            );
         }
 
         Ok(result)
@@ -726,8 +978,11 @@ impl QueueManager {
                     job_id,
                     state.queue.len()
                 );
+// TOFIX <<<<<<< Add-metrics
 
                 state.queue.len()
+//=======
+//>>>>>>> main
             }
         }; // Lock is automatically released when state goes out of scope
 
@@ -893,12 +1148,20 @@ impl QueueManager {
                     // Remove the job from the queue if it's there
                     state.queue.retain(|job| job.id != job_id);
 
-                    // Get folder path from job metadata and clone it
-                    let folder_path = if let Some(metadata) = state.job_metadata.get(job_id) {
-                        Some(metadata.folder_path.clone())
-                    } else {
-                        None
-                    };
+                    // Get folder path and audio file path from job metadata and clone them
+                    let (folder_path, audio_file) =
+                        if let Some(metadata) = state.job_metadata.get(job_id) {
+                            // Find the job in the queue to get the audio file path
+                            let audio_file = state
+                                .queue
+                                .iter()
+                                .find(|job| job.id == job_id)
+                                .map(|job| job.audio_file.clone());
+
+                            (Some(metadata.folder_path.clone()), audio_file)
+                        } else {
+                            (None, None)
+                        };
 
                     // Remove job from tracking
                     state.statuses.remove(job_id);
@@ -908,6 +1171,7 @@ impl QueueManager {
                     // Drop the lock before filesystem operations
                     drop(state);
 
+//TOFIX <<<<<<< Add-metrics
                     // Record cancellation metrics if we found the job
                     if let Some(job) = job_for_metrics {
                         self.metrics
@@ -916,6 +1180,23 @@ impl QueueManager {
                     }
 
                     // Remove job files if we have a path
+//=======
+                    // Explicitly remove the audio file first if path is available
+                    if let Some(audio_path) = audio_file {
+                        // Try to delete the audio file first
+                        if let Err(e) = fs::remove_file(&audio_path) {
+                            warn!(
+                                "Failed to remove audio file for canceled job {}: {}",
+                                job_id, e
+                            );
+                            // Continue with cancellation even if file removal fails
+                        } else {
+                            debug!("Successfully removed audio file: {}", audio_path.display());
+                        }
+                    }
+
+                    // Remove job directory if we have a path
+//>>>>>>> main
                     if let Some(path) = folder_path {
                         if let Err(e) = fs::remove_dir_all(&path) {
                             error!("Failed to remove folder for canceled job {}: {}", job_id, e);
@@ -945,6 +1226,18 @@ impl QueueManager {
     }
 
     /// Clean up a job and its resources
+    /// Get the current size of the job queue (number of queued jobs)
+    pub async fn get_queue_size(&self) -> usize {
+        let state = self.state.lock().await;
+        state.queue.len()
+    }
+
+    /// Get the number of jobs currently being processed
+    pub async fn get_processing_count(&self) -> usize {
+        let state = self.state.lock().await;
+        state.processing_count
+    }
+
     pub async fn cleanup_job(&self, job_id: &str) -> Result<(), QueueError> {
         let mut state = self.state.lock().await;
 
@@ -962,6 +1255,26 @@ impl QueueManager {
 
             // Try to remove temp folder if we found a folder path
             if let Some(metadata) = metadata {
+                // Try to find the audio file in the job folder (common naming pattern)
+                let audio_file_path = metadata.folder_path.join("audio");
+
+                // Clean up audio file first if it exists
+                if audio_file_path.exists() {
+                    if let Err(e) = fs::remove_file(&audio_file_path) {
+                        warn!(
+                            "Failed to remove audio file {}: {}",
+                            audio_file_path.display(),
+                            e
+                        );
+                        // Continue with cleanup even if file removal fails
+                    } else {
+                        debug!(
+                            "Successfully removed audio file: {}",
+                            audio_file_path.display()
+                        );
+                    }
+                }
+
                 // Clean up temporary folder
                 if let Err(e) = fs::remove_dir_all(&metadata.folder_path) {
                     error!(

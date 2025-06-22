@@ -1,614 +1,236 @@
-Please read carefully the README.md and the whisperx.md files. Then read all the code within all the rust files in the src directory and take a good attention to the inline comments. Finally, compose a very detailed prompt about what and how does this project with technical details so you could use this prompt to understand the current project status at once. Please edit the prompt.txt file and write this detailed prompt under the line with stars "********************"
-@file: src
+# Whisper API: A Technical Deep Dive
 
-***********************************************************************************************************************************************************************
+## Overview
 
-# Whisper API: A Robust Rust-based API for Audio Transcription with WhisperX
+The Whisper API is a robust Rust-based HTTP service that provides audio transcription capabilities by leveraging WhisperX. It's designed with a modular architecture that prioritizes reliability, scalability, and security, while offering flexible configuration options. This document provides a comprehensive technical explanation of the codebase structure, functionality, and implementation details.
 
-## Project Overview
-This project implements a high-performance HTTP API for audio transcription using WhisperX. Built in Rust with the Actix-web framework, it features a modular architecture with a queue-based processing system that handles multiple concurrent requests while managing system resources efficiently through sequential processing. The API provides clients with an asynchronous workflow for submitting audio files, monitoring transcription progress, and retrieving results with optional speaker diarization. All API endpoints are protected by token-based authentication, ensuring secure access to the transcription service.
+## Project Structure
 
-## Core Architecture Components
+The project follows a clean, modular architecture with clear separation of concerns:
 
-### 1. Modular Code Organization
-The codebase follows a modular design pattern with clear separation of concerns:
-- **config.rs**: Centralizes configuration management and environment variable handling
-- **error.rs**: Implements comprehensive error types with proper HTTP status code mapping
-- **file_utils.rs**: Manages file operations with resource cleanup guarantees
-- **handlers/**: Contains HTTP endpoint implementations with form processing logic
-  - **handlers/mod.rs**: Defines the module structure and re-exports handlers for use in main.rs
-  - **handlers/form.rs**: Handles multipart form data extraction, parameter validation, and file processing with detailed error handling and HuggingFace token fallback mechanisms
-  - **handlers/routes.rs**: Implements the four main API endpoints (transcription, transcription_status, transcription_result, cancel_transcription) with proper request handling and response formatting
-  - **handlers/authentication.rs**: Implements request authentication middleware that validates Bearer tokens in the Authorization header before processing any API request
-- **models.rs**: Defines data structures for requests, responses, and internal state
-- **queue_manager.rs**: Implements the job queue and transcription processing pipeline
-- **main.rs**: Initializes the application, configures routes, and starts the HTTP server
+- **Main Application Entry (`main.rs`)**: Initializes server, configures logging, loads settings, and sets up HTTP endpoints.
+- **Configuration Management (`config.rs` & `config_loader.rs`)**: Handles app configuration with multi-layered priority (env vars, config file, defaults).
+- **Error Handling (`error.rs`)**: Centralized error types with conversion traits for HTTP responses.
+- **Data Models (`models.rs`)**: Core data structures for the API, including request/response types.
+- **File Utilities (`file_utils.rs`)**: Handles file operations, temporary storage, and resource cleanup.
+- **Queue Management (`queue_manager.rs`)**: Implements the job queue system with FIFO ordering and concurrent processing.
+- **HTTP Handlers Module (`handlers/`)**: Contains endpoint implementations:
+  - `authentication.rs`: Token-based auth middleware
+  - `form.rs`: Multipart form processing
+  - `routes.rs`: API endpoint handlers (transcription, status, OPTIONS requests, etc.)
+  - `mod.rs`: Module organization and exports
 
-### 2. Queue Manager (`queue_manager.rs`)
-- Implements a FIFO transcription job queue using thread-safe `Arc<Mutex<>>` wrappers
-- Utilizes Tokio's asynchronous runtime for non-blocking, efficient IO operations
-- Supports two processing modes:
-  - Sequential mode (default): Processes one job at a time to prevent GPU resource contention
-  - Concurrent mode: Processes multiple jobs simultaneously when enabled via configuration
-- Configurable concurrency level with `MAX_CONCURRENT_JOBS` setting (default: 6)
-- Maintains job state (Queued, Processing, Completed, Failed) with automatic transitions
-- Handles the complete job lifecycle from submission through processing to cleanup
-- Features a configurable automatic job expiration system (default: 48 hours retention)
-- Provides a clean API for job management (status checks, result retrieval, cancellation)
-- Validates and processes various output formats (srt, vtt, txt, tsv, json, aud)
-- Ensures complete cleanup of both temporary files and WhisperX output files for privacy and security
+## Key Components
 
-### 3. HTTP Request Handling
-- RESTful API endpoints implemented with Actix-web for high performance
-- Configurable Bearer token authentication (can be enabled or disabled)
-- Support for both synchronous and asynchronous transcription modes
-- Multipart form data handling for audio file uploads (supports files up to 512MB)
-- Unique job IDs generated using UUIDs to prevent collisions
-- Job-specific temporary directories for secure file isolation
-- Comprehensive error handling with appropriate HTTP status codes
-- Optional HuggingFace token handling with fallback to file-based configuration
-- Automatic disabling of diarization when no token is available
+### 1. Queue Manager
 
-### 4. WhisperX Integration
-- Executes WhisperX through a wrapper script that manages the Python virtual environment
-- Uses a dedicated bash script (`whisperx.sh`) to handle environment activation/deactivation
-- Configurable parameters including:
-  - Model selection (tiny to large-v3, default: large-v3)
-  - Language specification (default: fr)
-  - Speaker diarization with HuggingFace token support
-  - Initial prompts for context-aware transcription
-  - Multiple output formats (srt, vtt, txt, tsv, json, aud)
-- File-based result handling with proper path management
-- Structured result parsing and delivery to clients
+The heart of the system is the `QueueManager` that handles transcription job processing:
+
+- **Thread-safe State**: Uses `Arc<Mutex<QueueState>>` to safely share state between threads
+- **Tokio Channels**: Uses `mpsc` channels to communicate between components
+- **Job Tracking**: Maintains job status, results, metadata and queue position
+- **Resource Management**: Handles cleanup of temporary files and completed jobs
+
+The queue manager supports two processing models:
+
+1. **Sequential Processing** (default):
+   - Processes one job at a time (FIFO order)
+   - Avoids GPU memory contention
+   - Queue position directly indicates position in line
+
+2. **Concurrent Processing** (when enabled):
+   - Processes multiple jobs simultaneously
+   - Controlled by `MAX_CONCURRENT_JOBS` setting
+   - Adjusts queue position reporting to represent "batches"
+   - Optimal for multi-GPU systems or high-memory GPUs
+
+### 2. Processing Modes
+
+The API supports two operational modes for client interaction:
+
+1. **Asynchronous Mode**:
+   - Returns immediately with job ID
+   - Client must poll for status/results
+   - Default operating mode
+   - Controlled by `sync=false` parameter
+   - Better for long running transcriptions
+
+2. **Synchronous Mode**:
+   - Waits for transcription to complete
+   - Returns results directly in the response
+   - Controlled by `sync=true` parameter
+   - Configurable timeout via `SYNC_REQUEST_TIMEOUT_SECONDS`
+   - Uses tokio oneshot channels for completion notification
+
+Implementation of sync mode:
+- When a sync request arrives, job is still added to queue like normal
+- A oneshot channel is registered for that job ID
+- Handler awaits on channel with optional timeout
+- When job completes, result is sent through channel to waiting handler
+- If already completed, notifies immediately
+
+### 3. Configuration System
+
+The configuration system uses a multi-layered approach:
+
+1. **Environment Variables**: Highest priority
+2. **TOML Configuration File**: Next priority (`whisper_api.conf`)
+3. **Default Constants**: Lowest priority (hardcoded in code)
+
+The `config_loader.rs` module handles parsing the TOML file and setting environment variables only if they don't already exist, preserving the priority order. This allows for flexible deployment across environments.
+
+### 4. Authentication
+
+The API implements a token-based authentication system via middleware:
+
+- Checks for `Authorization: Bearer <token>` header
+- Can be disabled via `ENABLE_AUTHORIZATION=false` setting
+- Uses middleware pattern for request interception
+- Currently implements a stub validation (accepts any token)
+- Designed for easy extension to real token validation
+- Automatically bypasses authentication for OPTIONS requests to support CORS pre-flight
+
+### 5. File Security and Privacy
+
+Multiple safeguards ensure file security and privacy:
+
+- **UUID-based Isolation**: Each job gets a unique folder
+- **Comprehensive Cleanup**:
+  - Audio files deleted after processing
+  - Output files deleted after delivery
+  - Auto-cleanup of expired jobs
+- **Retention Policy**: Configurable via `WHISPER_JOB_RETENTION_HOURS`
+- **Cleanup Task**: Background task runs periodically to remove old jobs
+
+### 6. WhisperX Integration
+
+The API integrates with WhisperX through a shell script wrapper:
+
+- Supports multiple transcription parameters (language, model, etc.)
+- Handles speaker diarization with optional HF token
+- Supports multiple output formats
+- Configurable device selection (CPU/GPU)
+
+## API Workflow
+
+1. **Job Submission**:
+   - Client uploads audio file with parameters
+   - System validates inputs and creates unique job folder
+   - Job is added to processing queue
+   - Response includes job ID and status URL
+
+2. **Processing**:
+   - Job processor pulls from queue based on mode (sequential/concurrent)
+   - WhisperX command is executed with appropriate parameters
+   - Results are parsed and stored
+   - Job status updated to Completed/Failed
+
+3. **Result Retrieval**:
+   - Client polls status endpoint until job completes
+   - Final result is retrieved via result endpoint
+   - System performs cleanup after successful delivery
 
 ## Technical Implementation Details
 
-### Concurrent Request Handling with Sequential Processing
-1. **HTTP Layer**:
-   - Actix-web provides asynchronous HTTP request handling
-   - Multiple concurrent clients can submit transcription requests
-   - Each request is processed independently up to the queuing stage
-   - Form data processing is handled in isolation with proper resource management
+### Thread Safety and Concurrency
 
-2. **Queue Management**:
-   - Uses `Arc<Mutex<QueueState>>` to provide thread-safe access to shared state
-   - Implements a single-producer, multiple-consumer (mpsc) channel for job dispatching
-   - Configurable processing model (sequential or concurrent):
-     - Sequential mode: Uses a processing counter to ensure only one job runs at a time
-     - Concurrent mode: Uses a processing counter and job set to track multiple running jobs
-   - Smart queue position calculation for both sequential and concurrent modes
-   - Provides accurate queue position information (including "batch" positioning in concurrent mode)
-   - Lock acquisition patterns carefully designed to prevent deadlocks:
-     ```rust
-     let queue_manager = queue_manager.lock().await;
-     queue_manager.add_job(job).await?;
-     ```
-   - Dual-mode job processing architecture:
-     ```rust
-     // State structure supports both modes through these fields:
-     struct QueueState {
-         queue: VecDeque<TranscriptionJob>,
-         processing_count: usize,        // Counter for active jobs
-         processing_jobs: HashSet<String>,  // Set of job IDs being processed
-         // ...other fields
-     }
+The system leverages Rust's ownership system and Tokio async runtime:
 
-     // Queue manager determines mode from configuration:
-     pub struct QueueManager {
-         state: Arc<Mutex<QueueState>>,
-         job_tx: mpsc::Sender<TranscriptionJob>,
-         enable_concurrency: bool,       // Processing mode flag
-         max_concurrent_jobs: usize,     // Maximum concurrent jobs
-     }
-     ```
+- **State Protection**: All mutable state is protected by mutexes
+- **Tokio Tasks**: Long-running operations run in separate tasks
+- **Channel Communication**: Components communicate via typed channels
+- **Lock Scoping**: Mutex locks are held for minimal duration to prevent contention
+- **Safe Cleanup**: Resource cleanup is carefully ordered to prevent race conditions
 
-3. **Background Processing**:
-   - Dedicated async task runs independently of the HTTP request lifecycle
-   - Listens on the job channel and processes jobs sequentially or concurrently based on configuration
-   - Dynamic job allocation system that adapts to the chosen processing model:
-     ```rust
-     // Determine job capacity based on processing mode
-     let available_slots = if enable_concurrency {
-         // In concurrent mode, use available capacity up to max_concurrent_jobs
-         max_concurrent_jobs.saturating_sub(state_guard.processing_count)
-     } else {
-         // In sequential mode, only process one job at a time
-         if state_guard.processing_count == 0 { 1 } else { 0 }
-     };
+### Resource Management
 
-     // Start as many jobs as we have slots for (may be 0, 1, or multiple)
-     for _ in 0..available_slots {
-         if let Some(next_job) = state_guard.queue.pop_front() {
-             // Update processing tracking
-             state_guard.processing_count += 1;
-             state_guard.processing_jobs.insert(next_job.id.clone());
+Resources are carefully managed throughout the job lifecycle:
 
-             // Start the job in its own task
-             tokio::spawn(async move {
-                 // Process the job asynchronously
-             });
-         }
-     }
-     ```
-   - Automatically chains job processing to maintain FIFO order
-   - Manages state transitions and error handling
+- **Temporary Storage**: Each job gets isolated folder under `WHISPER_TMP_FILES`
+- **Output Files**: Generated in `WHISPER_OUTPUT_DIR` with UUID-based naming
+- **File Cleanup**:
+  - On success: Files removed after result delivery
+  - On failure: Attempt partial cleanup to avoid leaks
+  - Periodic: Background task cleans expired jobs
+- **Error Recovery**: Cleanup tasks continue despite partial failures
 
-## Job Processing Workflow
-1. **Submission** (`POST /transcription`):
-   - Client authenticates with Bearer token in the Authorization header
-   - Client submits audio file and parameters via multipart form (with optional `sync` parameter)
-   - Server validates input and parameters
-   - Unique directory created for job isolation
-   - If HuggingFace token not provided in request, attempts to read from file
-   - Request handling branches based on sync parameter:
-     - If async (default): Add to queue and return job ID immediately
-     - If sync: Add to queue but wait for processing to complete before responding
-   - Job handling based on processing mode and current capacity:
-     ```rust
-     // Determine whether to queue or process immediately
-     let can_process_now = if self.enable_concurrency {
-         state.processing_count < self.max_concurrent_jobs
-     } else {
-         state.processing_count == 0
-     };
+### Queue Position Management
 
-     if can_process_now {
-         // Start processing immediately
-         state.processing_count += 1;
-         state.processing_jobs.insert(job_id.clone());
-         state.statuses.insert(job_id.clone(), JobStatus::Processing);
-         // Send job directly to processor
-     } else {
-         // Add job to queue (FIFO order)
-         state.queue.push_back(job);
-         state.statuses.insert(job_id.clone(), JobStatus::Queued);
-     }
-     ```
-   - For async mode: Client receives job ID and status URL
-   - For sync mode: Client waits and receives complete transcription result directly
+The system maintains accurate queue position tracking:
 
-2. **Processing**:
-   - Background processor dequeues jobs one at a time
-   - WhisperX command constructed with appropriate parameters
-   - Command executed and monitored for completion
-   - Output files read and parsed into result structure
-   - Job status updated based on success or failure
+- Position reflects 1-based index in the queue (1 = next to process)
+- With concurrency enabled, reports "batch" position
+- Only included in response when status is "Queued"
+- Updates automatically as jobs complete
 
-3. **Status Checking** (`GET /transcription/{job_id}`):
-   - Client authenticates with Bearer token in the Authorization header
-   - Client polls status endpoint using job ID
-   - Server responds with current status (Queued, Processing, Completed, Failed)
-   - For queued jobs, includes position in queue with mode-specific calculation:
-     ```rust
-     // With concurrency enabled, adjust the queue position
-     // to show which "batch" the job will be in
-     if self.enable_concurrency && self.max_concurrent_jobs > 1 {
-         // Example: If max_concurrent_jobs=3, positions 1-3 → batch 1,
-         // positions 4-6 → batch 2, etc.
-         let adjusted_position = (position + self.max_concurrent_jobs - 1)
-                                / self.max_concurrent_jobs;
-         return Ok(Some(adjusted_position));
-     }
-     ```
-   - This gives clients meaningful information about wait times regardless of processing mode
-   - No file system operations during status checks for efficiency
+### HTTP Server Configuration
 
-4. **Result Retrieval** (`GET /transcription/{job_id}/result`):
-   - Client authenticates with Bearer token in the Authorization header
-   - Client requests final transcription when status is Completed
-   - Server returns structured JSON with transcription text and metadata
-   - Both temporary files and WhisperX output files automatically cleaned up after successful delivery
-   - Error handling for cases where job is not complete or has failed
+The server is built on Actix-web with configurable settings:
 
-5. **Cancellation** (`DELETE /transcription/{job_id}`):
-   - Client authenticates with Bearer token in the Authorization header
-   - Client can cancel queued jobs (not applicable to in-progress jobs)
-   - Server removes job from queue and cleans up associated resources
-   - Confirmation or error message returned based on outcome
+- Worker threads based on available CPU cores or configuration
+- Configurable timeouts for connections
+- Proper error responses with appropriate HTTP status codes
+- Standardized response formats
+- Unified status endpoint for configuration visibility
+- CORS support via OPTIONS method handlers
 
-### Security and Privacy Features
-- **Configurable Authentication**:
-   ```rust
-   // Check if authentication is enabled via configuration
-   if !is_authorization_enabled() {
-       return Ok(());
-   }
+## Request Processing Flow
 
-   // Check if Authorization header exists and contains a Bearer token
-   if let Some(auth_header) = req.headers().get(header::AUTHORIZATION) {
-       if let Ok(auth_str) = auth_header.to_str() {
-           if auth_str.starts_with("Bearer ") {
-               let token = &auth_str[7..]; // Skip "Bearer " prefix
-               // Token validation logic here
-               return Ok(());
-           }
-       }
-   }
-   // Return unauthorized error if authentication fails
-   ```
+1. **Authentication Check**:
+   - Middleware validates Authorization header (if enabled)
+   - OPTIONS requests bypass authentication to support CORS pre-flight
 
-- **Isolated File Storage**:
-   ```rust
-   // Each job gets a unique UUID-based directory
-   let uuid = Uuid::new_v4();
-   let folder_name = uuid.to_string();
-   let directory_path = Path::new(base_dir).join(&folder_name);
-   ```
+2. **Form Processing**:
+   - Extracts and validates form data (audio file, parameters)
+   - Creates unique storage location
+   - Validates output format and other parameters
 
-- **Multi-layered Cleanup Mechanisms**:
-   - Immediate cleanup after result delivery (both temporary and output files)
-   - Error path cleanup to prevent orphaned files
-   - Cancellation cleanup for aborted jobs
-   - Background periodic cleanup for expired jobs (48-hour retention)
-   - Tracking of WhisperX output files for complete removal
+3. **Job Creation and Queueing**:
+   - Creates TranscriptionJob with parameters
+   - Adds job to queue or processes immediately based on conditions
+   - Updates job status and metadata
 
-- **Resource Protection**:
-   - File size validation (configurable, default: 512MB)
-   - Processing mode configurable between sequential (safer) and concurrent (faster) modes
-   - Managed concurrency to optimize GPU resource utilization:
-     ```rust
-     // Single unified implementation elegantly handles both modes
-     async fn check_and_start_next_jobs(
-         state_guard: &mut QueueState,
-         job_tx: &mpsc::Sender<TranscriptionJob>,
-         enable_concurrency: bool,
-         max_concurrent_jobs: usize,
-     ) {
-         // Calculate available capacity based on processing mode
-         let available_slots = if enable_concurrency {
-             max_concurrent_jobs.saturating_sub(state_guard.processing_count)
-         } else {
-             if state_guard.processing_count == 0 { 1 } else { 0 }
-         };
+4. **Processing**:
+   - Runs WhisperX command with parameters
+   - Captures output and errors
+   - Stores results for retrieval
 
-         // Start only the number of jobs allowed by the current mode
-         for _ in 0..available_slots {
-             if let Some(next_job) = state_guard.queue.pop_front() {
-                 // Process job...
-             }
-         }
-     }
-     ```
-   - Proper error handling to ensure resource release
-   - Configurable timeouts to prevent hung connections
+5. **Response Delivery**:
+   - Returns appropriate response based on processing mode
+   - For async: Returns job ID and status URL
+   - For sync: Returns transcription result directly
+   - For status: Returns API configuration and queue statistics
+   - For OPTIONS: Returns allowed methods and CORS headers
 
-### Error Handling Architecture
-- **Error Types Hierarchy**:
-   ```rust
-   #[derive(Error, Debug)]
-   pub enum HandlerError {
-       #[error("Form error: {0}")]
-       FormError(String),
+6. **API Status**:
+   - Provides configuration information (host, port, worker count)
+   - Shows processing settings (device, concurrency mode, formats)
+   - Reports resource limits (file size, retention periods)
+   - Includes real-time queue statistics (queued and processing jobs)
+   - Serves as a monitoring and diagnostic endpoint
 
-       #[error("File error: {0}")]
-       FileError(#[from] io::Error),
+## Configuration Options
 
-       // Additional error variants for different scenarios
-   }
-   ```
+The system offers extensive configuration via environment variables or config file:
 
-- **HTTP Status Code Mapping**:
-   ```rust
-   impl ResponseError for HandlerError {
-       fn error_response(&self) -> HttpResponse {
-           // Maps error types to appropriate HTTP status codes
-           match self {
-               HandlerError::NoAudioFile => HttpResponse::BadRequest().json(...),
-               HandlerError::JobNotFound(_) => HttpResponse::NotFound().json(...),
-               HandlerError::FileTooLarge(_, _) => HttpResponse::PayloadTooLarge().json(...),
-               // Other mappings
-           }
-       }
-   }
-   ```
+- **Server Settings**: Host, port, timeouts, worker count
+- **Resource Limits**: Max file size, job retention period
+- **Processing Options**: Device selection, concurrency settings
+- **Security**: Authentication requirement
+- **Operation Mode**: Default sync/async behavior
 
-- **Resource Cleanup on Error**:
-   ```rust
-   // Automatic cleanup when errors occur
-   pub fn with_cleanup(self, folder: Option<&PathBuf>) -> Self {
-       if let Some(folder) = folder {
-           crate::file_utils::cleanup_folder(folder);
-       }
-       self
-   }
-   ```
+All these configuration options are transparently exposed through the `/status` endpoint, providing runtime visibility into the current API configuration and operational status.
 
-### Configuration System
+## Error Handling and Recovery
 
-- **TOML Configuration File**:
-  - Located at `whisper_api.conf` in the application directory
-  - Supports all configuration parameters in TOML format with sections for clarity
-  - Values loaded at startup before environment variables are checked
-  - Configuration values loaded with hierarchical precedence:
-    1. Environment variables (highest priority)
-    2. Configuration file values
-    3. Default constants (lowest priority)
-  - Example structure:
-  ```toml
-  # Server Configuration
-  WHISPER_API_HOST = "127.0.0.1"
-  WHISPER_API_PORT = "8181"
-  HTTP_WORKER_NUMBER = 0  # Use number of CPU cores
+The system implements comprehensive error handling:
 
-  # API Configuration
-    SYNC_REQUEST_TIMEOUT_SECONDS = 1800  # 30 minutes timeout for synchronous requests
-    DEFAULT_SYNC_MODE = false  # Default to asynchronous mode when 'sync' parameter is missing
+- **Typed Errors**: All errors are properly typed via thiserror
+- **Graceful Degradation**: System continues despite partial failures
+- **Resource Cleanup**: Error paths include cleanup operations
+- **Error Mapping**: Internal errors mapped to appropriate HTTP responses
+- **Logging**: Detailed error logging for debugging and monitoring
 
-  # File Storage Configuration
-  WHISPER_TMP_FILES = "/home/llm/whisper_api/tmp"
+## Conclusion
 
-  # Concurrency Configuration
-  ENABLE_CONCURRENCY = false
-  MAX_CONCURRENT_JOBS = 6
-
-  # Upload Configuration
-  MAX_FILE_SIZE = 536870912  # 512MB
-  ```
-
-- **WhisperX Script Wrapper**:
-   ```bash
-   #!/bin/bash
-
-   # Chemin absolu vers le répertoire de whisperx
-   PROJECT_DIR="/home/llm/whisperx"
-
-   # Chemin absolu vers l'environnement virtuel : venv
-   VENV_DIR="$PROJECT_DIR/venv"
-
-   # Chemin absolu vers la commande whisperx
-   PYTHON_SCRIPT="$VENV_DIR/bin/whisperx"
-
-   # --- Activaction de l'environnement virtuel ---
-   source "$VENV_DIR/bin/activate"
-
-   # --- Exécution du programme Python avec tous les arguments passés au script ---
-   python "$PYTHON_SCRIPT" "$@"
-
-   # --- Désactivation l'environnement virtuel ---
-   deactivate
-   ```
-
-- **Environment Variables with Defaults**:
-   ```rust
-   // Environment variable loading with defaults
-   fn default() -> Self {
-       Self {
-           temp_dir: env::var("WHISPER_TMP_FILES")
-               .unwrap_or_else(|_| String::from(defaults::TEMP_DIR)),
-           hf_token_file: env::var("WHISPER_HF_TOKEN_FILE")
-               .unwrap_or_else(|_| String::from(defaults::HF_TOKEN_FILE)),
-           command_path: env::var("WHISPER_CMD")
-               .unwrap_or_else(|_| String::from(DEFAULT_WHISPER_CMD)), // Uses whisperx.sh script by default
-           worker_number: env::var("HTTP_WORKER_NUMBER")
-               .ok()
-               .and_then(|s| s.parse().ok())
-               .unwrap_or(defaults::DEFAULT_HTTP_WORKER_NUMBER), // 0 means use CPU core count
-       }
-   }
-   ```
-
-- **Configuration Loading**:
-   ```rust
-   // Load configuration from TOML file and set environment variables
-   pub fn load_config() -> bool {
-       let config_path = Path::new(CONFIG_FILE_PATH);
-
-       // Check if configuration file exists
-       if !config_path.exists() {
-           debug!("Configuration file not found at: {}", CONFIG_FILE_PATH);
-           return false;
-       }
-
-       // Read and parse TOML content
-       let config_content = match fs::read_to_string(config_path) {
-           Ok(content) => content,
-           Err(e) => {
-               warn!("Failed to read configuration file: {}", e);
-               return false;
-           }
-       };
-
-       // Convert TOML into environment variables, if they don't already exist
-       // This ensures that explicit environment variables take precedence
-       // over configuration file values
-       for (key, value) in parsed_config {
-           if env::var(&key).is_err() {
-               env::set_var(key, value);
-           }
-       }
-
-       true
-   }
-   ```
-
-- **Centralized Configuration Constants**:
-   ```rust
-   pub mod defaults {
-             pub const TEMP_DIR: &str = "/home/llm/whisper_api/tmp";
-             pub const LANGUAGE: &str = "fr";
-             pub const MODEL: &str = "large-v3";
-             pub const HF_TOKEN_FILE: &str = "/home/llm/whisper_api/hf_token.txt";
-             pub const VALID_OUTPUT_FORMATS: [&str; 6] = ["srt", "vtt", "txt", "tsv", "json", "aud"];
-             pub const MAX_FILE_SIZE: usize = 536870912; // 512MB
-             pub const ENABLE_CONCURRENCY: bool = false;
-             pub const MAX_CONCURRENT_JOBS: usize = 6;
-             pub const ENABLE_AUTHORIZATION: bool = true; // Authentication required by default
-             pub const SYNC_REQUEST_TIMEOUT_SECONDS: u64 = 1800; // 30 minutes timeout for sync requests
-             pub const DEFAULT_SYNC_MODE: bool = false; // Default to async mode when sync parameter is missing
-          pub const DEFAULT_HTTP_WORKER_NUMBER: usize = 0; // 0 means use number of CPU cores
-   }
-   ```
-
-### HuggingFace Token Handling
-- **Multi-source Token Resolution**:
-  1. First tries to use token provided in request parameters
-  2. If not provided, attempts to read from configured token file (`hf_token.txt`)
-  3. If file is missing, empty, or unreadable, disables diarization
-
-- **HuggingFace Token File**:
-  - Default location: `/home/llm/whisper_api/hf_token.txt`
-  - Configurable via `WHISPER_HF_TOKEN_FILE` environment variable
-  - Contains plain text HuggingFace API token with no formatting requirements
-  - System automatically trims whitespace from token when reading
-  - No token in file results in automatic diarization disabling
-  - Prevents need to include token in every API request
-  - Provides centralized management of authentication credentials
-
-- **Automatic Diarization Fallback**:
-  ```rust
-  // If no token is available, disable diarization
-  if params.hf_token.is_none() {
-      let hf_token_path = std::path::Path::new(&config.hf_token_file);
-      if hf_token_path.exists() {
-          match read_text_file(hf_token_path) {
-              Ok(token) => {
-                  // Use token from file
-              }
-              Err(_) => {
-                  // Disable diarization if token cannot be read
-                  if params.diarize {
-                      warn!("Disabling diarization because no HuggingFace token is available");
-                      params.diarize = false;
-                  }
-              }
-          }
-      }
-  }
-  ```
-
-## API Endpoints Documentation
-
-### 1. Submit Transcription (`POST /transcription`)
-- **Purpose**: Upload audio file and start transcription
-- **Headers**: `Authorization: Bearer <token>` (required when authentication is enabled)
-- **Form Parameters**:
-  - `file`: Audio file (required, configurable max size, default: 512MB)
-  - `language`: Language code (optional, default: "fr")
-  - `model`: Model name (optional, default: "large-v3")
-  - `diarize`: Enable speaker diarization (optional, default: true)
-  - `prompt`: Initial transcription prompt (optional)
-  - `hf_token`: HuggingFace token for diarization (optional, if not provided will attempt to read from `hf_token.txt` file)
-  - `response_format`: Result format (optional, default: "txt")
-  - `sync`: Process synchronously and wait for result (optional, default: value of `DEFAULT_SYNC_MODE` configuration)
-- **Response (Async Mode)**: Job ID and status URL
-- **Response (Sync Mode)**: Complete transcription result including text and segments
-- **Error Handling**: File size validation, format validation, server errors, authentication failures, timeouts (for sync mode)
-
-### 2. Check Status (`GET /transcription/{job_id}`)
-- **Purpose**: Monitor transcription progress
-- **Path Parameters**: `job_id` (UUID from submission)
-- **Headers**: `Authorization: Bearer <token>` (required when authentication is enabled)
-- **Response**:
-  - Current job status (Queued, Processing, Completed, Failed)
-  - Queue position (only for Queued jobs, 1-based index)
-- **Error Handling**: Job not found, server errors, authentication failures
-
-### 3. Get Result (`GET /transcription/{job_id}/result`)
-- **Purpose**: Retrieve completed transcription
-- **Path Parameters**: `job_id` (UUID from submission)
-- **Headers**: `Authorization: Bearer <token>` (required when authentication is enabled)
-- **Response**: Transcription text, language, and segments
-- **Error Handling**: Job not found, job not completed, server errors, authentication failures
-- **Side Effects**: Triggers cleanup of job files after delivery
-
-### 4. Cancel Job (`DELETE /transcription/{job_id}`)
-- **Purpose**: Cancel pending transcription
-- **Path Parameters**: `job_id` (UUID from submission)
-- **Headers**: `Authorization: Bearer <token>` (required when authentication is enabled)
-- **Response**: Success confirmation or error message
-- **Error Handling**: Job not found, job already processing, server errors, authentication failures
-- **Side Effects**: Removes job files if successfully canceled
-
-## Deployment Requirements
-- **Runtime Dependencies**:
-  - **Deployment Requirements**:
-    - Rust with Tokio async runtime
-    - WhisperX installed in its virtual environment
-    - Bash script (`whisperx.sh`) to handle Python environment management
-    - GPU support for efficient transcription processing
-    - Sufficient disk space for temporary files and results
-    - HuggingFace token file (`/home/llm/whisper_api/hf_token.txt` by default) if diarization support needed
-      - File should contain only the API token as plain text
-      - Optional - system will operate without it but diarization will be disabled
-
-  - **Configuration Options**:
-    - TOML configuration file (`whisper_api.conf`) for persistent configuration
-    - Environment variables for runtime overrides
-    - 21+ configurable parameters including concurrency, security, API behavior, and server settings
-    - Defaults suitable for standard deployments
-
-  - **Authentication Configuration**:
-    - `ENABLE_AUTHORIZATION`: Boolean flag to enable/disable authentication requirement (default: true)
-    - When enabled, all API requests must include a valid Bearer token
-    - When disabled, API endpoints can be accessed without authentication
-
-  - **Concurrency Configuration**:
-    - `ENABLE_CONCURRENCY`: Boolean flag to enable/disable concurrent processing (default: false)
-    - `MAX_CONCURRENT_JOBS`: Maximum number of concurrent jobs when enabled (default: 6)
-    - Sequential mode recommended for systems with limited GPU memory
-    - Concurrent mode recommended for systems with multiple GPUs or high-memory GPUs
-    - Unified architectural approach that handles both modes without code duplication:
-      ```rust
-      // Job Processing Implementation:
-
-      // 1. Job submission logic checks if immediate processing is possible:
-      let can_process_now = if self.enable_concurrency {
-          state.processing_count < self.max_concurrent_jobs
-      } else {
-          state.processing_count == 0
-      };
-
-      // 2. Job processor manages concurrency dynamically:
-      tokio::spawn(async move {
-          // Each job is processed in its own task
-          let result = Self::process_transcription(job, &config, state.clone()).await;
-
-          // After job completes, update state and start next jobs if possible
-          {
-              let mut state_guard = state.lock().await;
-              // Update job status
-              state_guard.processing_count -= 1;
-              state_guard.processing_jobs.remove(&job_id);
-
-              // Check if more jobs can now be started
-              Self::check_and_start_next_jobs(
-                  &mut state_guard, &job_tx, enable_concurrency, max_concurrent_jobs
-              ).await;
-          }
-      });
-
-      // 3. Each completed job may trigger additional jobs to start, maintaining
-      //    either sequential or concurrent operation as configured
-      ```
-    - `WHISPER_HF_TOKEN_FILE` variable to specify custom location for HuggingFace token file
-    - Documentation in README.md for all settings
-
-## Current Status and Limitations
-- **Fully Implemented Features**:
-  - Complete API with all endpoints functional
-  - Authentication middleware requiring Bearer tokens for all requests
-  - Queue management with sequential processing and position tracking
-  - Comprehensive file isolation and cleanup processes (both temporary and output files)
-  - Error handling and logging
-  - Configuration via environment variables
-  - HuggingFace token handling with fallback mechanisms
-
-- **Limitations**:
-  - Basic authentication with dummy token verification (any token accepted)
-  - No rate limiting mechanisms
-  - No streaming results for long transcriptions
-  - Limited metrics and monitoring capabilities
-  - No built-in health checks or readiness probes
-  - Single-instance design (no distributed queuing)
-  - Audio file limited to 512MB maximum size
-
-## Future Enhancement Opportunities
-- Enhanced authentication with proper token validation
-- Advanced authorization with role-based access control
-- Metrics collection for performance monitoring
-- Health check endpoints for deployment monitoring
-- Rate limiting to prevent API abuse
-- Support for batch processing of multiple files
-- Streaming API for large transcription jobs
-- Distributed queue for multi-instance deployments
-- Enhanced logging for better diagnostics
+The Whisper API is a well-architected, thread-safe system that efficiently manages audio transcription workloads. It offers flexible configuration options, robust error handling, and multiple operating modes to accommodate various use cases. Its modular design allows for easy extension and maintenance, while the queue-based architecture ensures optimal resource utilization.

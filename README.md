@@ -49,6 +49,8 @@ The configuration file uses TOML format and should be placed in the same directo
 WHISPER_API_HOST = "192.168.0.116"
 WHISPER_API_PORT = "8181"
 WHISPER_CMD = "/home/llm/whisper_api/whisperx.sh"
+WHISPER_DEVICE = "cuda"
+WHISPER_DEVICE_INDEX = "0"
 # Additional configuration options...
 ```
 
@@ -69,6 +71,8 @@ The application can be configured using the following environment variables:
 | `WHISPER_MODELS_DIR` | Path to the models directory | `/models` |
 | `WHISPER_OUTPUT_DIR` | Directory for WhisperX to store output files | `/home/llm/whisper_api/output` |
 | `WHISPER_OUTPUT_FORMAT` | Default output format for transcriptions | `txt` |
+| `WHISPER_DEVICE` | Device to use for PyTorch inference (cuda or cpu) | `cuda` |
+| `WHISPER_DEVICE_INDEX` | Device index to use for FasterWhisper inference (used when multiple GPUs are available) | `0` |
 | `WHISPER_TMP_FILES` | Directory for storing temporary files | `/home/llm/whisper_api/tmp` |
 | `WHISPER_API_HOST` | Host address to bind the server | `127.0.0.1` |
 | `WHISPER_API_PORT` | Port for the HTTP server | `8181` |
@@ -103,6 +107,29 @@ Authentication can be disabled by setting `ENABLE_AUTHORIZATION=false` in the co
 
 ## API Endpoints
 
+### OPTIONS for Transcription Resource
+
+```
+OPTIONS /transcription
+```
+
+**Description**: Returns the available HTTP methods and CORS headers for the /transcription resource. This endpoint is always accessible regardless of authentication settings to support CORS pre-flight requests.
+
+**Response Headers**:
+- `Allow`: Lists all available HTTP methods for the resource
+- `Access-Control-Allow-Methods`: Same as Allow header, for CORS
+- `Access-Control-Allow-Headers`: Lists allowed headers, including Authorization and Content-Type
+- `Access-Control-Max-Age`: Caching duration for preflight response (86400 seconds = 24 hours)
+
+**Response**:
+```
+HTTP/1.1 200 OK
+Allow: OPTIONS, POST, GET, DELETE
+Access-Control-Allow-Methods: OPTIONS, POST, GET, DELETE
+Access-Control-Allow-Headers: Authorization, Content-Type
+Access-Control-Max-Age: 86400
+```
+
 ### Submit a Transcription Job
 
 ```
@@ -117,6 +144,8 @@ POST /transcription
 - `prompt`: Initial text prompt for transcription (optional, default: "")
 - `hf_token`: Hugging Face API token for accessing diarization models (optional, if not provided will try to load from `hf_token.txt` file). Required for speaker diarization to work properly.
 - `response_format`: Format of transcription output (optional, values: "srt", "vtt", "txt", "tsv", "json", "aud", default: "txt")
+- `device`: Device to use for PyTorch inference (optional, values: "cuda", "cpu", default: value of `WHISPER_DEVICE` configuration)
+- `device_index`: Device index for inference when using CUDA (optional, default: value of `WHISPER_DEVICE_INDEX` configuration)
 - `sync`: Whether to process the request synchronously (optional, values: "true", "false", default: value of `DEFAULT_SYNC_MODE` configuration)
 
 **Response (Async Mode - default)**:
@@ -209,12 +238,63 @@ DELETE /transcription/{job_id}
 }
 ```
 
+### Get API Status
+
+```
+GET /status
+```
+
+**Description**: Returns information about the API configuration and current queue state. This provides a snapshot of how the API is configured and the current job processing status.
+
+**Response**:
+```json
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": "8181",
+    "timeout": 480,
+    "keepalive": 480,
+    "worker_number": 2
+  },
+  "processing": {
+    "concurrent_mode": false,
+    "max_concurrent_jobs": 6,
+    "device": "cuda",
+    "device_index": "0",
+    "default_output_format": "txt",
+    "default_sync_mode": false,
+    "sync_timeout": 1800
+  },
+  "resources": {
+    "max_file_size": 536870912,
+    "job_retention_hours": 48,
+    "cleanup_interval_hours": 12
+  },
+  "security": {
+    "authorization_enabled": false
+  },
+  "queue_state": {
+    "queued_jobs": 2,
+    "processing_jobs": 1
+  },
+  "error": null
+}
+```
+
+**Fields**:
+- `server`: Server configuration details (host, port, timeouts, worker count)
+- `processing`: Processing configuration (sequential/concurrent mode, device settings, formats)
+- `resources`: Resource limits and retention policies
+- `security`: Security settings like authentication requirement
+- `queue_state`: Current number of queued and processing jobs
+- `error`: Any error that occurred when fetching queue state (null if no errors)
+
 ## Configuration Example
 
 A complete `whisper_api.conf` file might look like this:
 
 ```
-# Server Configuration 
+# Server Configuration
 WHISPER_API_HOST = "0.0.0.0"
 WHISPER_API_PORT = "9000"
 WHISPER_API_TIMEOUT = 600
@@ -234,6 +314,8 @@ WHISPER_CMD = "/opt/whisper/whisperx.sh"
 WHISPER_MODELS_DIR = "/opt/whisper/models"
 WHISPER_OUTPUT_DIR = "/data/whisper/output"
 WHISPER_OUTPUT_FORMAT = "srt"
+WHISPER_DEVICE = "cuda"
+WHISPER_DEVICE_INDEX = "0"
 
 # Job Management Configuration
 WHISPER_JOB_RETENTION_HOURS = 24
@@ -247,7 +329,7 @@ ENABLE_CONCURRENCY = true
 MAX_CONCURRENT_JOBS = 6
 
 # Security Configuration
-ENABLE_AUTHORIZATION = true
+ENABLE_AUTHORIZATION = false
 ```
 
 ## Test Commands
@@ -282,7 +364,7 @@ curl -X GET "http://localhost:8181/transcription/YOUR_JOB_ID" \
   -H "Authorization: Bearer your_token_here"
 ```
 
-Note: 
+Note:
 - The maximum file size is configurable using the `MAX_FILE_SIZE` setting (default: 512 MB).
 - Job processing can be configured for concurrent operation by setting `ENABLE_CONCURRENCY=true` and `MAX_CONCURRENT_JOBS` to the desired number of simultaneous jobs (default: 6).
 - When concurrency is enabled, the queue position reflects the "batch" in which a job will be processed rather than its exact position in the queue.
@@ -332,6 +414,23 @@ curl -X POST "http://localhost:8181/transcription" \
   -F "file=@/path/to/audio.wav"
 ```
 
+#### Specify Device and Device Index
+```bash
+curl -X POST "http://localhost:8181/transcription" \
+  -H "Authorization: Bearer your_token_here" \
+  -F "device=cuda" \
+  -F "device_index=0" \
+  -F "file=@/path/to/audio.wav"
+```
+
+#### Use CPU Instead of GPU
+```bash
+curl -X POST "http://localhost:8181/transcription" \
+  -H "Authorization: Bearer your_token_here" \
+  -F "device=cpu" \
+  -F "file=@/path/to/audio.wav"
+```
+
 #### Use Diarization with Hugging Face Token
 ```bash
 curl -X POST "http://localhost:8181/transcription" \
@@ -376,7 +475,7 @@ The Whisper API supports multiple modes of operation:
 
 1. **Asynchronous Mode** (default)
    - Returns immediately with a job ID
-   - Client must poll for status and retrieve results separately 
+   - Client must poll for status and retrieve results separately
    - Doesn't block HTTP connections during processing
    - Ideal for long transcriptions or when immediate results aren't needed
 

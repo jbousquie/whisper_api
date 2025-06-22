@@ -23,19 +23,6 @@ WHISPER_API_KEEPALIVE = 480
 # n>0: Use n workers (limited to the number of available CPU cores)
 HTTP_WORKER_NUMBER = 2
 
-# Enable the metrics configuration for the Whisper API
-WHISPER_API_METRICS_ENABLED = true
-# Options: "prometheus", "statsd", "none". 
-# Default is "none".
-WHISPER_API_METRICS_BACKEND = "statsd"
-
-# Metrics endpoint (for StatsD or other backends requiring endpoints)
-# For Prometheus, this is not typically needed as metrics are exposed via HTTP
-WHISPER_API_METRICS_ENDPOINT = "127.0.0.1:8125"
-
-# Metrics prefix for all exported metrics
-WHISPER_API_METRICS_PREFIX = "whisper_api"
-
 # ======== File Storage Configuration ========
 # Directory for temporary files
 WHISPER_TMP_FILES = "/home/llm/whisper_api/tmp"
@@ -56,10 +43,10 @@ WHISPER_OUTPUT_DIR = "/home/llm/whisper_api/output"
 # Default output format (srt, vtt, txt, tsv, json, aud)
 WHISPER_OUTPUT_FORMAT = "txt"
 
-# Device to use for PyTorch inference (cuda or cpu)
+# Device for PyTorch inference (cuda or cpu)
 WHISPER_DEVICE = "cuda"
 
-# Device index to use for inference when using CUDA
+# Device index for FasterWhisper inference
 WHISPER_DEVICE_INDEX = "0"
 
 # ======== Job Management Configuration ========

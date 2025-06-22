@@ -22,10 +22,16 @@ pub mod defaults {
 
     // Valid output formats
     pub const VALID_OUTPUT_FORMATS: [&str; 6] = ["srt", "vtt", "txt", "tsv", "json", "aud"];
-    
+
+    // Default device for PyTorch inference
+    pub const DEVICE: &str = "cuda";
+
+    // Default device index for inference
+    pub const DEVICE_INDEX: &str = "0";
+
     // Default timeout in seconds for synchronous transcription requests
     pub const SYNC_REQUEST_TIMEOUT_SECONDS: u64 = 1800;
-    
+
     // Default processing mode when 'sync' parameter is missing
     pub const DEFAULT_SYNC_MODE: bool = false;
 }

@@ -1,0 +1,58 @@
+# Whisper API: Rust-based Audio Transcription Service
+
+## Architecture Overview
+The Whisper API is a high-performance HTTP service built in Rust using Actix-web that provides audio transcription via WhisperX. It implements a queue-based architecture with modular components that manage concurrent requests while optimizing resource usage through configurable sequential or parallel processing.
+
+## Core Components
+- **HTTP Handler**: Receives requests, validates parameters, stores audio files
+- **Queue Manager**: Manages transcription jobs in FIFO order with configurable concurrency
+- **WhisperX Integration**: Executes transcription with support for multiple parameters
+- **Authentication System**: Token-based access control (configurable)
+
+## Key Features
+- RESTful API with both synchronous and asynchronous transcription modes
+- Configurable audio processing device (CPU/CUDA) with device selection
+- Support for speaker diarization with HuggingFace token handling
+- Comprehensive job lifecycle management (submission, monitoring, retrieval, cancellation)
+- Multiple output formats (srt, vtt, txt, tsv, json)
+- API status endpoint for configuration visibility and queue monitoring
+- Automatic file cleanup and privacy protection
+- Queue position tracking with intelligent wait time estimation
+- Flexible configuration via TOML file and environment variables
+- UUID-based job isolation for security
+
+## Configuration Options
+- Processing device: `WHISPER_DEVICE` (cuda/cpu) and `WHISPER_DEVICE_INDEX` (GPU selection)
+- Concurrency: `ENABLE_CONCURRENCY` and `MAX_CONCURRENT_JOBS`
+- Authentication: `ENABLE_AUTHORIZATION`
+- Resource limits: `MAX_FILE_SIZE`, `SYNC_REQUEST_TIMEOUT_SECONDS`
+- File management: `WHISPER_TMP_FILES`, `WHISPER_OUTPUT_DIR`, `WHISPER_JOB_RETENTION_HOURS`
+
+## API Endpoints
+- `POST /transcription`: Submit audio for transcription
+- `GET /transcription/{job_id}`: Check job status with queue position
+- `GET /transcription/{job_id}/result`: Retrieve completed transcription
+- `DELETE /transcription/{job_id}`: Cancel pending job
+- `GET /status`: Get API configuration and queue statistics
+- `OPTIONS /transcription`: Get available methods and CORS headers
+
+## Technical Implementation
+- Thread-safe queue management with `Arc<Mutex<>>` and Tokio async runtime
+- Intelligent resource allocation based on processing mode
+- Comprehensive error handling with proper HTTP status codes
+- Automatic job expiration and cleanup system
+- Multi-layered file security and privacy protection
+- Real-time configuration visibility and monitoring capabilities
+- CORS support with pre-flight request handling via OPTIONS
+
+## Deployment Requirements
+- Rust with Tokio async runtime
+- WhisperX with Python environment
+- GPU support (optional, can run on CPU)
+- Configuration file for environment-specific settings
+- Optional HuggingFace token for speaker diarization
+
+## Limitations and Future Enhancements
+- Currently implements basic token verification
+- Single-instance design (no distributed queuing)
+- Maximum file size limited to 512MB by default

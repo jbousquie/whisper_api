@@ -3,9 +3,9 @@
 // This module contains the data models used for the Whisper API.
 // It includes request and response types used across the API.
 
+use crate::queue_manager::JobStatus;
 use serde::Serialize;
 use std::path::PathBuf;
-use crate::queue_manager::JobStatus;
 
 /// Response for transcription request
 #[derive(Serialize)]
@@ -37,6 +37,10 @@ pub struct TranscriptionParams {
     pub folder_path: Option<PathBuf>,
     /// Synchronous processing mode (true = wait for result, false = async job)
     pub sync: bool,
+    /// Device for PyTorch inference (cuda or cpu)
+    pub device: Option<String>,
+    /// Device index for inference when using CUDA
+    pub device_index: Option<String>,
 }
 
 /// Error response for API

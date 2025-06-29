@@ -1102,17 +1102,23 @@ impl Metrics {
 
     /// Internal increment that doesn't propagate errors (for convenience methods)
     async fn increment_internal(&self, name: &str, labels: &[(&str, &str)]) {
-        let _ = self.increment(name, labels).await;
+        if let Err(e) = self.increment(name, labels).await {
+            log::warn!("Failed to increment metric '{}': {}", name, e);
+        }
     }
 
     /// Internal set_gauge that doesn't propagate errors (for convenience methods)
     async fn set_gauge_internal(&self, name: &str, value: f64, labels: &[(&str, &str)]) {
-        let _ = self.set_gauge(name, value, labels).await;
+        if let Err(e) = self.set_gauge(name, value, labels).await {
+            log::warn!("Failed to set gauge '{}': {}", name, e);
+        }
     }
 
     /// Internal observe_histogram that doesn't propagate errors (for convenience methods)
     async fn observe_histogram_internal(&self, name: &str, value: f64, labels: &[(&str, &str)]) {
-        let _ = self.observe_histogram(name, value, labels).await;
+        if let Err(e) = self.observe_histogram(name, value, labels).await {
+            log::warn!("Failed to observe histogram '{}': {}", name, e);
+        }
     }
 }
 

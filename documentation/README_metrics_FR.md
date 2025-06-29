@@ -1,6 +1,6 @@
-# Module de métriques de l'api whisper 
+# Module de métriques de l'api whisper
 
-## Architecture générale du système de métriques 
+## Architecture générale du système de métriques
 
 Le système de métriques de l'API Whisper est conçu selon une architecture modulaire qui permet de collecter, traiter et exporter des données de performance vers différents systèmes de monitoring. Le module principal se trouve dans `metrics` et utilise un pattern de traits pour supporter plusieurs backends d'export.
 

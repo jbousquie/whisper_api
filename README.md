@@ -519,7 +519,11 @@ The Whisper API implements several security and privacy measures:
    - Audio files and transcription results are isolated
    - File paths are not exposed to clients
 
+## Documentation
+
+- **[Metrics System Documentation](METRICS_SYSTEM_DOCUMENTATION.md)**: Comprehensive guide to the metrics system including configuration, API reference, performance optimizations, and production deployment
+- **[WhisperX Documentation](whisperx.md)**: Configuration and usage of the WhisperX transcription engine
+
 ## Resources
 
 - WhisperX: https://github.com/m-bain/whisperX
-- [WhisperX Documentation](whisperx.md)

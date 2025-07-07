@@ -9,8 +9,10 @@ pub mod routes;
 
 // Re-export handlers for easier access
 pub use self::routes::{
+
     api_status, cancel_transcription, transcribe, transcription_options, transcription_result,
     transcription_status,
 };
+
 // Re-export authentication middleware
 pub use self::authentication::Authentication;

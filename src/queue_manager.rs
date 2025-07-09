@@ -109,7 +109,7 @@ impl Default for WhisperConfig {
 
 /// Job status enum for tracking the progress of transcription jobs
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "status")]
+//#[serde(tag = "status")]
 /// Queue State Representation
 /// Each job has exactly one status entry and at most one result
 pub enum JobStatus {

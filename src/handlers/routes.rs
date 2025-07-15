@@ -3,6 +3,12 @@
 // This module contains the route handlers for the Whisper API.
 // It implements the actual HTTP endpoints for the API.
 
+use crate::config::HandlerConfig;
+use crate::error::HandlerError;
+use crate::handlers::form::extract_form_data;
+use crate::models::{StatusResponse, SuccessResponse, TranscriptionResponse};
+use crate::queue_manager::{JobStatus, QueueManager, TranscriptionJob, TranscriptionResult};
+use crate::Metrics;
 use actix_multipart::Multipart;
 use actix_web::{delete, get, options, post, web, HttpRequest, HttpResponse};
 use log::{error, info, warn};
@@ -10,13 +16,9 @@ use serde::Serialize;
 use std::env;
 use std::sync::Arc;
 use std::time::Duration;
+use std::time::Instant;
 use tokio::sync::{oneshot, Mutex};
 
-use crate::config::HandlerConfig;
-use crate::error::HandlerError;
-use crate::handlers::form::extract_form_data;
-use crate::models::{StatusResponse, SuccessResponse, TranscriptionResponse};
-use crate::queue_manager::{JobStatus, QueueManager, TranscriptionJob, TranscriptionResult};
 /// Handler for transcription requests
 ///
 /// This endpoint receives audio files and transcription parameters,
@@ -30,7 +32,9 @@ pub async fn transcribe(
     form: Multipart,
     queue_manager: web::Data<Arc<Mutex<QueueManager>>>,
     config: web::Data<HandlerConfig>,
+    metrics: web::Data<Metrics>,
 ) -> Result<HttpResponse, HandlerError> {
+    let start_time = Instant::now();
     // Extract form data (audio file and parameters)
     let (params, job_paths) = extract_form_data(form, &config).await?;
 
@@ -86,14 +90,21 @@ pub async fn transcribe(
     }
 
     // Generate status URL for client to check progress
-    let status_url = format!("/transcription/{}", job_paths.id);
-
-    // Return job ID and status URL to client
+    let status_url = format!("/transcription/{}", job_paths.id); // Return job ID and status URL to client
     info!("Job {} added to queue", job_paths.id);
-    Ok(HttpResponse::Accepted().json(TranscriptionResponse {
+
+    let response = HttpResponse::Accepted().json(TranscriptionResponse {
         job_id: job_paths.id,
         status_url,
-    }))
+    });
+
+    // Record HTTP request metrics
+    let duration = start_time.elapsed().as_secs_f64();
+    metrics
+        .record_http_request("POST", "/transcribe", "202", duration)
+        .await;
+
+    Ok(response)
 }
 
 /// Process a job synchronously, waiting for its completion
@@ -333,7 +344,9 @@ pub async fn api_status(
 pub async fn transcription_status(
     job_id: web::Path<String>,
     queue_manager: web::Data<Arc<Mutex<QueueManager>>>,
+    metrics: web::Data<Metrics>,
 ) -> Result<HttpResponse, HandlerError> {
+    let start_time = Instant::now();
     let job_id = job_id.into_inner();
 
     // Create lock scope to minimize lock duration
@@ -359,6 +372,12 @@ pub async fn transcription_status(
         queue_position,
     };
 
+    // Record HTTP request metrics
+    let duration = start_time.elapsed().as_secs_f64();
+    metrics
+        .record_http_request("GET", "/transcription/{job_id}", "200", duration)
+        .await;
+
     Ok(HttpResponse::Ok().json(response))
 }
 
@@ -370,17 +389,23 @@ pub async fn transcription_status(
 pub async fn transcription_result(
     job_id: web::Path<String>,
     queue_manager: web::Data<Arc<Mutex<QueueManager>>>,
+    metrics: web::Data<Metrics>,
 ) -> Result<HttpResponse, HandlerError> {
+    let start_time = Instant::now();
     let job_id = job_id.into_inner();
 
     // Get the job result
     let queue_manager = queue_manager.lock().await;
-    let result = queue_manager.get_job_result(&job_id).await?;
-
-    // Clean up the job files after delivering the result
+    let result = queue_manager.get_job_result(&job_id).await?; // Clean up the job files after delivering the result
     if let Err(e) = queue_manager.cleanup_job(&job_id).await {
         warn!("Failed to clean up job {}: {}", job_id, e);
     }
+
+    // Record HTTP request metrics
+    let duration = start_time.elapsed().as_secs_f64();
+    metrics
+        .record_http_request("GET", "/transcription/{job_id}/result", "200", duration)
+        .await;
 
     Ok(HttpResponse::Ok().json(result))
 }
@@ -413,14 +438,22 @@ pub async fn transcription_options(_req: HttpRequest) -> HttpResponse {
 pub async fn cancel_transcription(
     job_id: web::Path<String>,
     queue_manager: web::Data<Arc<Mutex<QueueManager>>>,
+    metrics: web::Data<Metrics>,
 ) -> Result<HttpResponse, HandlerError> {
+    let start_time = Instant::now();
     let job_id = job_id.into_inner();
 
     // Cancel the job
     let queue_manager = queue_manager.lock().await;
     queue_manager.cancel_job(&job_id).await?;
-
     info!("Successfully canceled job: {}", job_id);
+
+    // Record HTTP request metrics
+    let duration = start_time.elapsed().as_secs_f64();
+    metrics
+        .record_http_request("DELETE", "/transcription/{job_id}", "200", duration)
+        .await;
+
     Ok(HttpResponse::Ok().json(SuccessResponse {
         success: true,
         message: "Job canceled successfully".to_string(),

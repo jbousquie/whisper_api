@@ -66,7 +66,6 @@ where
     type Future = LocalBoxFuture<'static, Result<Self::Response, Self::Error>>;
 
     forward_ready!(service);
-
     fn call(&self, req: ServiceRequest) -> Self::Future {
         // Skip authentication for OPTIONS requests
         if req.method() == actix_web::http::Method::OPTIONS {
@@ -80,7 +79,28 @@ where
 
         let authenticate_result = authenticate(&req);
 
-        if authenticate_result.is_err() {
+        // Record authentication attempts - we'll use app_data to get metrics if available
+        if let Some(metrics) =
+            req.app_data::<actix_web::web::Data<crate::metrics::metrics::Metrics>>()
+        {
+            let metrics = metrics.clone();
+
+            if authenticate_result.is_err() {
+                // Record failed authentication
+                let metrics_clone = metrics.clone();
+                tokio::spawn(async move {
+                    metrics_clone.record_auth_attempt("failed").await;
+                });
+                let error = authenticate_result.err().unwrap();
+                return Box::pin(async move { Err(error) });
+            } else {
+                // Record successful authentication
+                let metrics_clone = metrics.clone();
+                tokio::spawn(async move {
+                    metrics_clone.record_auth_attempt("success").await;
+                });
+            }
+        } else if authenticate_result.is_err() {
             let error = authenticate_result.err().unwrap();
             return Box::pin(async move { Err(error) });
         }
@@ -110,7 +130,8 @@ fn authenticate(req: &ServiceRequest) -> Result<(), Error> {
                 let token = &auth_str[7..]; // Skip "Bearer " prefix
                 debug!("Request received with token: {}", token);
 
-                // Validate the token
+                // For now, accept any token (dummy verification)
+                // In a real implementation, this would validate the token using the function below
                 return validate_token(token);
             } else {
                 warn!("Invalid Authorization header format, missing 'Bearer' prefix");

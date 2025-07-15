@@ -1,6 +1,6 @@
 // Configuration loader for Whisper API
 //
-// This module handles loading configuration from the TOML configuration file 
+// This module handles loading configuration from the TOML configuration file
 // and environment variables with appropriate precedence.
 
 use std::collections::HashMap;
@@ -14,7 +14,7 @@ use toml::Value;
 const CONFIG_FILE_PATH: &str = "whisper_api.conf";
 
 /// Loads configuration from TOML file and environment variables
-/// 
+///
 /// Configuration precedence (highest to lowest):
 /// 1. Environment variables
 /// 2. Configuration file values
@@ -25,13 +25,13 @@ const CONFIG_FILE_PATH: &str = "whisper_api.conf";
 /// Returns true if the config file was successfully loaded, false otherwise
 pub fn load_config() -> bool {
     let config_path = Path::new(CONFIG_FILE_PATH);
-    
+
     // Check if configuration file exists
     if !config_path.exists() {
         debug!("Configuration file not found at: {}", CONFIG_FILE_PATH);
         return false;
     }
-    
+
     // Read configuration file
     let config_content = match fs::read_to_string(config_path) {
         Ok(content) => content,
@@ -40,7 +40,7 @@ pub fn load_config() -> bool {
             return false;
         }
     };
-    
+
     // Parse TOML content
     let config_values: Value = match config_content.parse() {
         Ok(values) => values,
@@ -49,10 +49,10 @@ pub fn load_config() -> bool {
             return false;
         }
     };
-    
+
     // Convert TOML into flat key-value pairs
     let mut config_map = HashMap::new();
-    
+
     // TOML is expected to be flat (not nested), simply extract key-value pairs
     if let Value::Table(table) = config_values {
         for (key, value) in table {
@@ -76,7 +76,7 @@ pub fn load_config() -> bool {
             }
         }
     }
-    
+
     // Set environment variables from config file if they don't already exist
     for (key, value) in config_map {
         // Only set if the environment variable doesn't already exist
@@ -87,7 +87,7 @@ pub fn load_config() -> bool {
             debug!("Env var already exists, skipping: {}", key);
         }
     }
-    
+
     info!("Configuration loaded from {}", CONFIG_FILE_PATH);
     true
 }

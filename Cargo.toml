@@ -2,6 +2,7 @@
 name = "whisper_api"
 version = "0.2.0"
 edition = "2021"
+license = "CeCILL-B"
 
 [dependencies]
 tokio = { version = "1.45.1", features = ["full"] }
@@ -14,7 +15,13 @@ uuid = { version = "1.17.0", features = ["v4"] }
 log = "0.4"
 env_logger = "0.11"
 thiserror = "2.0.12"
+prometheus = { version = "0.14", features = ["process"] }
+async-trait = "0.1"
+fastrand = "2.0"
 toml = "0.8.23"
 num_cpus = "1.17.0"
+dashmap = "6.0"
+
 lazy_static = "1.5.0"
 chrono = "0.4"
+

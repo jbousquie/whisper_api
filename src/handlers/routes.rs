@@ -109,53 +109,91 @@ async fn process_sync_job(
     let job_id = job.id.clone();
     {
         let queue_manager = queue_manager.lock().await;
-        queue_manager.add_job(job).await?;
+        queue_manager.add_job(job).await.map_err(|e| {
+            error!("Failed to add job to queue for synchronous processing: {}", e);
+            HandlerError::from(e)
+        })?;
     }
 
     // Create a channel for notification when job completes
     let (tx, rx) = oneshot::channel::<TranscriptionResult>();
 
     // Register the channel for this job
-    {
+    let register_result = {
         let queue_manager = queue_manager.lock().await;
-        queue_manager.register_sync_channel(&job_id, tx).await?;
+        queue_manager.register_sync_channel(&job_id, tx).await
+    };
+
+    if let Err(e) = register_result {
+        error!("Failed to register sync channel for job {}: {}", job_id, e);
+        // If we fail to register the channel, we should clean up the job
+        {
+            let queue_manager = queue_manager.lock().await;
+            if let Err(cleanup_err) = queue_manager.cleanup_job(&job_id).await {
+                warn!("Failed to clean up job {} after sync channel registration error: {}", job_id, cleanup_err);
+            }
+        }
+        return Err(HandlerError::from(e));
     }
 
     // Wait for job completion (with timeout)
     if timeout_seconds > 0 {
         match tokio::time::timeout(Duration::from_secs(timeout_seconds), rx).await {
             Ok(result) => {
-                // Job completed successfully
-                // Clean up (same as in result endpoint)
-                if let Err(e) = queue_manager.lock().await.cleanup_job(&job_id).await {
-                    warn!("Failed to clean up synchronized job {}: {}", job_id, e);
+                match result {
+                    Ok(result_value) => {
+                        // Job completed successfully
+                        // Clean up (same as in result endpoint)
+                        if let Err(e) = queue_manager.lock().await.cleanup_job(&job_id).await {
+                            warn!("Failed to clean up synchronized job {}: {}", job_id, e);
+                        }
+                        Ok(result_value)
+                    },
+                    Err(e) => {
+                        error!("Job {} completed with error in synchronous mode: {}", job_id, e);
+                        // Even if the job failed, we should clean up
+                        if let Err(cleanup_err) = queue_manager.lock().await.cleanup_job(&job_id).await {
+                            warn!("Failed to clean up job {} after processing error: {}", job_id, cleanup_err);
+                        }
+                        Err(HandlerError::QueueError(format!("Job {} failed during processing: {}", job_id, e)))
+                    }
                 }
-                return Ok(result?);
-            }
+            },
             Err(_) => {
                 // Timeout
-                // Remove the channel
                 {
                     let queue_manager = queue_manager.lock().await;
+                    // Remove the channel to prevent memory leaks
                     queue_manager.remove_sync_channel(&job_id).await;
+
+                    // Clean up the job in case it's still in the system
+                    if let Err(e) = queue_manager.cleanup_job(&job_id).await {
+                        warn!("Failed to clean up timed out job {}: {}", job_id, e);
+                    }
                 }
 
-                return Err(HandlerError::SyncTimeout(timeout_seconds));
+                error!("Synchronous job {} timed out after {} seconds", job_id, timeout_seconds);
+                Err(HandlerError::SyncTimeout(timeout_seconds))
             }
         }
     } else {
         // No timeout - wait indefinitely
         match rx.await {
-            Ok(result) => {
+            Ok(result_value) => {
                 // Clean up
                 if let Err(e) = queue_manager.lock().await.cleanup_job(&job_id).await {
                     warn!("Failed to clean up synchronized job {}: {}", job_id, e);
                 }
-                return Ok(result);
-            }
+                Ok(result_value)
+            },
             Err(e) => {
-                // Channel error
-                return Err(HandlerError::from(e));
+                error!("Sync channel for job {} was closed before result: {}", job_id, e);
+                // If the channel was closed before receiving a result, clean up the job
+                if let Err(cleanup_err) = queue_manager.lock().await.cleanup_job(&job_id).await {
+                    warn!("Failed to clean up job {} after sync channel error: {}", job_id, cleanup_err);
+                }
+
+                Err(HandlerError::QueueError(format!("Synchronous processing failed for job {}: Channel closed unexpectedly", job_id)))
             }
         }
     }

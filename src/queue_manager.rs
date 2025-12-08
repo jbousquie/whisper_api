@@ -36,6 +36,52 @@ const ENV_WHISPER_OUTPUT_FORMAT: &str = "WHISPER_OUTPUT_FORMAT";
 const ENV_WHISPER_DEVICE: &str = "WHISPER_DEVICE";
 const ENV_WHISPER_DEVICE_INDEX: &str = "WHISPER_DEVICE_INDEX";
 
+/// Sanitizes a filename by replacing special characters that might cause issues
+/// with safe alternatives. Keeps alphanumeric characters and some safe symbols,
+/// replacing everything else with underscores.
+fn sanitize_filename(filename: &str) -> String {
+    filename
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' || c == '.' { c } else { '_' })
+        .collect()
+}
+
+/// Execute a command with retry logic in case of failure
+async fn execute_command_with_retry(
+    mut command: std::process::Command,
+    audio_file_path: &Path
+) -> Result<std::process::Output, QueueError> {
+    let max_attempts = 3;
+    let mut attempts = 0;
+
+    loop {
+        attempts += 1;
+
+        match command.output() {
+            Ok(output) => return Ok(output),
+            Err(e) => {
+                if attempts >= max_attempts {
+                    // Attempt to clean up audio file on command execution error
+                    if let Err(err) = fs::remove_file(audio_file_path) {
+                        warn!(
+                            "Failed to remove audio file {} after error: {}",
+                            audio_file_path.display(),
+                            err
+                        );
+                    }
+                    return Err(QueueError::TranscriptionError(format!("Failed after {} attempts to run command: {}", max_attempts, e)));
+                } else {
+                    warn!(
+                        "Command attempt {} failed: {}, retrying in 1 second...",
+                        attempts, e
+                    );
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+            }
+        }
+    }
+}
+
 /// Configuration for the WhisperX command
 #[derive(Clone, Debug)]
 pub struct WhisperConfig {
@@ -345,17 +391,18 @@ impl QueueManager {
                     info!("Current processing jobs: {:?}", job_list);
                 }
 
-                // Spawn a task for this job
+                // Spawn a task for this job with comprehensive error handling
                 let job_clone = job.clone();
                 let state_clone = state.clone();
                 let config_clone = config.clone();
                 let job_tx_clone = job_tx.clone();
 
                 tokio::spawn(async move {
-                    // Process the job
-                    let result =
-                        Self::process_transcription(job_clone, &config_clone, state_clone.clone())
-                            .await;
+                    // Process the job, catch any panics to prevent the entire service from crashing
+                    let result = match Self::process_transcription(job_clone, &config_clone, state_clone.clone()).await {
+                        Ok(transcription_result) => Ok(transcription_result),
+                        Err(e) => Err(e),
+                    };
 
                     // Update job status based on result
                     {
@@ -609,25 +656,20 @@ impl QueueManager {
         let audio_file_name = Path::new(&job.audio_file)
             .file_stem()
             .and_then(|s| s.to_str())
+            .filter(|s| !s.is_empty())
             .unwrap_or("audio");
-        let output_filename = format!("{}.{}", audio_file_name, output_format);
+
+        // Sanitize the filename to avoid special characters that might cause issues
+        let sanitized_name = sanitize_filename(audio_file_name);
+        let output_filename = format!("{}.{}", sanitized_name, output_format);
         let output_file_path = Path::new(&config.output_dir).join(&output_filename);
 
         // Store the output file path in the job metadata for later cleanup
         // This will be retrieved and used during cleanup to remove the output file
         let output_file_path_clone = output_file_path.clone();
 
-        let output = command.output().map_err(|e| {
-            // Attempt to clean up audio file on command execution error
-            if let Err(err) = fs::remove_file(&audio_file_path) {
-                warn!(
-                    "Failed to remove audio file {} after error: {}",
-                    audio_file_path.display(),
-                    err
-                );
-            }
-            QueueError::TranscriptionError(format!("Failed to run command: {}", e))
-        })?;
+        // Execute the command with retry logic
+        let output = execute_command_with_retry(command, &audio_file_path).await?;
 
         if !output.status.success() {
             let error = String::from_utf8_lossy(&output.stderr).to_string();

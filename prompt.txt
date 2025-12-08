@@ -231,6 +231,24 @@ The system implements comprehensive error handling:
 - **Error Mapping**: Internal errors mapped to appropriate HTTP responses
 - **Logging**: Detailed error logging for debugging and monitoring
 
+### Enhanced Error Handling in Queue Management
+
+Recent improvements to error handling include:
+
+- **Filename Sanitization**: Audio filenames are sanitized to prevent special characters from causing file system errors
+- **Command Retry Logic**: WhisperX execution now includes retry logic with up to 3 attempts in case of temporary failures
+- **Robust Job Processing**: The queue manager includes enhanced error handling to ensure stability even when individual jobs fail
+
+### Enhanced Synchronous Processing Error Handling
+
+For synchronous processing, additional error handling has been implemented:
+
+- **Job Submission Errors**: Proper error propagation if adding a job to the queue fails during synchronous processing
+- **Channel Registration Errors**: Comprehensive error handling for channel registration failures with appropriate cleanup
+- **Timeout Management**: Robust timeout handling with proper resource cleanup when synchronous jobs exceed the configured timeout
+- **Channel Closure Handling**: Improved error handling when channels are closed unexpectedly during synchronous processing
+- **Resource Leak Prevention**: Proper cleanup of job resources in all error scenarios to prevent resource leaks
+
 ## Conclusion
 
 The Whisper API is a well-architected, thread-safe system that efficiently manages audio transcription workloads. It offers flexible configuration options, robust error handling, and multiple operating modes to accommodate various use cases. Its modular design allows for easy extension and maintenance, while the queue-based architecture ensures optimal resource utilization.

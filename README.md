@@ -1,4 +1,4 @@
-# WHISPER API
+# WHISPERX API
 
 A frontend service for audio transcription using WhisperX with authentication.
 
@@ -331,6 +331,31 @@ MAX_CONCURRENT_JOBS = 6
 # Security Configuration
 ENABLE_AUTHORIZATION = false
 ```
+
+## Error Handling
+
+The Whisper API provides clear error messages when startup issues occur:
+
+- If the configured port is already in use, the API will display an error message: "Error: Failed to bind to address [host]:[port]"
+- The service will provide the reason for the error: "Reason: Address already in use"
+- Users will receive specific instructions on how to resolve the issue: "Please check if another process is using port [port] or configure a different port in your configuration"
+- The API suggests using environment variables or updating the configuration file: "You can change the port by setting the WHISPER_API_PORT environment variable or by updating the WHISPER_API_PORT value in whisper_api.conf"
+- Instead of crashing unexpectedly, the service terminates gracefully with an appropriate exit code
+
+In addition, the API includes robust error handling during transcription processing:
+
+- Audio file names are sanitized to prevent issues with special characters that could cause file system errors
+- The WhisperX command execution includes retry logic with up to 3 attempts in case of temporary failures
+- The queue manager includes comprehensive error handling to ensure the service remains stable even if individual transcription jobs fail
+- The system continues to operate normally even when individual jobs encounter errors
+
+For synchronous processing jobs, additional error handling has been implemented:
+
+- Proper error propagation if adding a job to the queue fails during synchronous processing
+- Comprehensive error handling for channel registration failures with appropriate cleanup
+- Robust timeout handling with proper resource cleanup when synchronous jobs exceed the configured timeout
+- Improved error handling when channels are closed unexpectedly during synchronous processing
+- Proper cleanup of job resources in all error scenarios to prevent resource leaks
 
 ## Test Commands
 

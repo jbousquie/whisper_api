@@ -165,7 +165,7 @@ async fn main() -> std::io::Result<()> {
     info!("WhisperX command: {}", command_path);
     info!("WhisperX models directory: {}", models_dir);
 
-    HttpServer::new(move || {
+    let server = HttpServer::new(move || {
         App::new()
             .wrap(Logger::default())
             .wrap(Authentication)
@@ -177,11 +177,26 @@ async fn main() -> std::io::Result<()> {
             .service(transcription_result)
             .service(cancel_transcription)
             .service(transcription_options)
-    })
-    .bind(format!("{}:{}", host, port))?
-    .client_disconnect_timeout(timeout)
-    .keep_alive(keep_alive)
-    .workers(workers_to_use)
-    .run()
-    .await
+    });
+
+    let binding_result = server.bind(format!("{}:{}", host, port));
+    match binding_result {
+        Ok(bound_server) => {
+            bound_server
+                .client_disconnect_timeout(timeout)
+                .keep_alive(keep_alive)
+                .workers(workers_to_use)
+                .run()
+                .await
+        }
+        Err(e) => {
+            eprintln!("Error: Failed to bind to address {}:{}", host, port);
+            eprintln!("Reason: {}", e);
+            eprintln!();
+            eprintln!("Please check if another process is using port {} or configure a different port in your configuration.", port);
+            eprintln!("You can change the port by setting the WHISPER_API_PORT environment variable");
+            eprintln!("or by updating the WHISPER_API_PORT value in whisper_api.conf");
+            std::process::exit(1);
+        }
+    }
 }

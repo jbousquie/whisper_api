@@ -40,6 +40,9 @@ The Whisper API is a high-performance HTTP service built in Rust using Actix-web
 - Thread-safe queue management with `Arc<Mutex<>>` and Tokio async runtime
 - Intelligent resource allocation based on processing mode
 - Comprehensive error handling with proper HTTP status codes
+- Filename sanitization to prevent special character issues
+- Command retry logic with up to 3 attempts for transient failures
+- Enhanced synchronous processing error handling with proper resource cleanup
 - Automatic job expiration and cleanup system
 - Multi-layered file security and privacy protection
 - Real-time configuration visibility and monitoring capabilities

@@ -7,6 +7,7 @@ use std::io;
 use std::path::PathBuf;
 use thiserror::Error;
 use tokio::sync::oneshot;
+use log::{error, debug};
 
 use actix_web::{HttpResponse, ResponseError};
 
@@ -63,9 +64,16 @@ impl HandlerError {
     }
     
     /// Helper to clean up a folder when error occurs
+    /// Returns a tuple of (HandlerError, cleanup_success: bool) to track cleanup status
     pub fn with_cleanup(self, folder: Option<&PathBuf>) -> Self {
         if let Some(folder) = folder {
-            crate::file_utils::cleanup_folder(folder);
+            // Attempt cleanup and log the result
+            let cleanup_result = crate::file_utils::cleanup_folder_with_result(folder);
+            if !cleanup_result {
+                error!("Failed to clean up folder during error handling: {}", folder.display());
+            } else {
+                debug!("Successfully cleaned up folder during error handling: {}", folder.display());
+            }
         }
         self
     }

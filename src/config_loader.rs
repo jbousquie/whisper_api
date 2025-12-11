@@ -58,6 +58,11 @@ pub fn load_config() -> bool {
         for (key, value) in table {
             match value {
                 Value::String(s) => {
+                    // Validate that the string is not empty
+                    if s.is_empty() {
+                        warn!("Skipping empty string value for key: {}", key);
+                        continue;
+                    }
                     config_map.insert(key, s);
                 }
                 Value::Integer(i) => {
@@ -75,6 +80,9 @@ pub fn load_config() -> bool {
                 }
             }
         }
+    } else {
+        warn!("Configuration file does not contain a valid TOML table");
+        return false;
     }
     
     // Set environment variables from config file if they don't already exist

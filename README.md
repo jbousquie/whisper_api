@@ -357,6 +357,114 @@ For synchronous processing jobs, additional error handling has been implemented:
 - Improved error handling when channels are closed unexpectedly during synchronous processing
 - Proper cleanup of job resources in all error scenarios to prevent resource leaks
 
+## Comprehensive Validation and Error Handling
+
+The Whisper API has been enhanced with comprehensive validation and error handling throughout all critical components to prevent panics and improve robustness:
+
+### Queue Manager Enhancements
+- **Audio File Validation**: Validates that audio files exist before processing
+- **Command Path Validation**: Ensures WhisperX command path exists and is executable
+- **Directory Validation**: Validates models directory and output directory paths
+- **Error Recovery**: Comprehensive error handling with detailed logging and graceful degradation
+- **Timeout Handling**: Added timeout-based lock acquisition to prevent deadlocks
+
+### File Operations Safety
+- **Path Validation**: Comprehensive validation of base paths and directory structures
+- **File Existence Checks**: Prevents overwriting existing files with proper error handling
+- **Permission Checks**: Validates file permissions before operations
+- **Cleanup Safety**: Enhanced cleanup operations with result tracking and error logging
+- **System Protection**: Prevents operations on system directories and root paths
+
+### Form Processing Improvements
+- **MIME Type Validation**: Validates audio file MIME types to ensure only valid audio files are processed
+- **Content Type Checking**: Verifies that uploaded files have appropriate audio content types
+- **Error Handling**: Enhanced error handling with proper cleanup in all error scenarios
+- **File Validation**: Comprehensive validation of uploaded files before processing
+
+### Authentication Enhancements
+- **Token Validation**: Added token length validation and basic format validation
+- **Error Handling**: Improved error handling with detailed logging for authentication failures
+- **Security Checks**: Enhanced token validation with comprehensive error reporting
+- **Graceful Rejection**: Proper rejection of invalid tokens with appropriate HTTP status codes
+
+### Configuration Validation
+- **Environment Variable Validation**: Validates that configuration values are within acceptable ranges
+- **Timeout Validation**: Ensures timeout values are within reasonable bounds (1-3600 seconds)
+- **Path Validation**: Validates directory paths and prevents invalid configurations
+- **Error Handling**: Comprehensive error handling for configuration loading and parsing
+
+### Main Application Safety
+- **Directory Path Validation**: Validates temporary directory paths before operations
+- **System Protection**: Prevents operations on system directories and root paths
+- **Error Handling**: Enhanced error handling with detailed logging and graceful termination
+- **Resource Safety**: Comprehensive validation of all resource paths and configurations
+
+### Models Validation
+- **Parameter Validation**: Added validation methods for transcription parameters
+- **Language Code Validation**: Ensures language codes are valid (2-3 characters)
+- **Model Validation**: Validates that model names are not empty and are valid
+- **Error Handling**: Comprehensive validation with detailed error messages
+
+### Configuration Loading Safety
+- **TOML Parsing**: Enhanced TOML parsing with validation and error handling
+- **Value Validation**: Validates configuration values and skips invalid entries
+- **Error Handling**: Comprehensive error handling for configuration file parsing
+- **Logging**: Detailed logging of configuration loading process and errors
+
+## Comprehensive Validation and Error Handling
+
+The Whisper API has been enhanced with comprehensive validation and error handling throughout all critical components to prevent panics and improve robustness:
+
+### Queue Manager Enhancements
+- **Audio File Validation**: Validates that audio files exist before processing
+- **Command Path Validation**: Ensures WhisperX command path exists and is executable
+- **Directory Validation**: Validates models directory and output directory paths
+- **Error Recovery**: Comprehensive error handling with detailed logging and graceful degradation
+- **Timeout Handling**: Added timeout-based lock acquisition to prevent deadlocks
+
+### File Operations Safety
+- **Path Validation**: Comprehensive validation of base paths and directory structures
+- **File Existence Checks**: Prevents overwriting existing files with proper error handling
+- **Permission Checks**: Validates file permissions before operations
+- **Cleanup Safety**: Enhanced cleanup operations with result tracking and error logging
+- **System Protection**: Prevents operations on system directories and root paths
+
+### Form Processing Improvements
+- **MIME Type Validation**: Validates audio file MIME types to ensure only valid audio files are processed
+- **Content Type Checking**: Verifies that uploaded files have appropriate audio content types
+- **Error Handling**: Enhanced error handling with proper cleanup in all error scenarios
+- **File Validation**: Comprehensive validation of uploaded files before processing
+
+### Authentication Enhancements
+- **Token Validation**: Added token length validation and basic format validation
+- **Error Handling**: Improved error handling with detailed logging for authentication failures
+- **Security Checks**: Enhanced token validation with comprehensive error reporting
+- **Graceful Rejection**: Proper rejection of invalid tokens with appropriate HTTP status codes
+
+### Configuration Validation
+- **Environment Variable Validation**: Validates that configuration values are within acceptable ranges
+- **Timeout Validation**: Ensures timeout values are within reasonable bounds (1-3600 seconds)
+- **Path Validation**: Validates directory paths and prevents invalid configurations
+- **Error Handling**: Comprehensive error handling for configuration loading and parsing
+
+### Main Application Safety
+- **Directory Path Validation**: Validates temporary directory paths before operations
+- **System Protection**: Prevents operations on system directories and root paths
+- **Error Handling**: Enhanced error handling with detailed logging and graceful termination
+- **Resource Safety**: Comprehensive validation of all resource paths and configurations
+
+### Models Validation
+- **Parameter Validation**: Added validation methods for transcription parameters
+- **Language Code Validation**: Ensures language codes are valid (2-3 characters)
+- **Model Validation**: Validates that model names are not empty and are valid
+- **Error Handling**: Comprehensive validation with detailed error messages
+
+### Configuration Loading Safety
+- **TOML Parsing**: Enhanced TOML parsing with validation and error handling
+- **Value Validation**: Validates configuration values and skips invalid entries
+- **Error Handling**: Comprehensive error handling for configuration file parsing
+- **Logging**: Detailed logging of configuration loading process and errors
+
 ## Test Commands
 
 ### Submit Transcription (Asynchronous Mode - Default)

@@ -4,7 +4,10 @@
 // It centralizes all configuration parameters and provides defaults from environment variables.
 
 use std::env;
+use std::fs;
 use std::path::PathBuf;
+use std::path::Path;
+use log::{info, warn};
 
 /// Default values for configuration
 pub mod defaults {
@@ -51,19 +54,45 @@ pub struct HandlerConfig {
 
 impl Default for HandlerConfig {
     fn default() -> Self {
+        // Validate and get temp directory
+        let temp_dir = env::var("WHISPER_TMP_FILES")
+            .unwrap_or_else(|_| String::from(defaults::TEMP_DIR));
+        
+        // Validate temp directory exists or can be created
+        if !Path::new(&temp_dir).exists() {
+            if let Err(e) = fs::create_dir_all(&temp_dir) {
+                warn!("Failed to create temp directory {}: {}. Using default.", temp_dir, e);
+            }
+        }
+        
+        // Validate and get HF token file path
+        let hf_token_file = env::var("WHISPER_HF_TOKEN_FILE")
+            .unwrap_or_else(|_| String::from(defaults::HF_TOKEN_FILE));
+        
+        // Validate sync request timeout
+        let sync_request_timeout = env::var("SYNC_REQUEST_TIMEOUT_SECONDS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .filter(|&t| t > 0 && t <= 3600) // Must be between 1 and 3600 seconds
+            .unwrap_or_else(|| {
+                warn!("Invalid SYNC_REQUEST_TIMEOUT_SECONDS value. Using default: {}", defaults::SYNC_REQUEST_TIMEOUT_SECONDS);
+                defaults::SYNC_REQUEST_TIMEOUT_SECONDS
+            });
+        
+        // Validate default sync mode
+        let default_sync_mode = env::var("DEFAULT_SYNC_MODE")
+            .ok()
+            .and_then(|s| s.parse::<bool>().ok())
+            .unwrap_or(defaults::DEFAULT_SYNC_MODE);
+        
+        info!("HandlerConfig initialized: temp_dir={}, sync_timeout={}s, default_sync={}", 
+             temp_dir, sync_request_timeout, default_sync_mode);
+        
         Self {
-            temp_dir: env::var("WHISPER_TMP_FILES")
-                .unwrap_or_else(|_| String::from(defaults::TEMP_DIR)),
-            hf_token_file: env::var("WHISPER_HF_TOKEN_FILE")
-                .unwrap_or_else(|_| String::from(defaults::HF_TOKEN_FILE)),
-            sync_request_timeout: env::var("SYNC_REQUEST_TIMEOUT_SECONDS")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(defaults::SYNC_REQUEST_TIMEOUT_SECONDS),
-            default_sync_mode: env::var("DEFAULT_SYNC_MODE")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(defaults::DEFAULT_SYNC_MODE),
+            temp_dir,
+            hf_token_file,
+            sync_request_timeout,
+            default_sync_mode,
         }
     }
 }

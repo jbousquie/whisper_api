@@ -107,8 +107,14 @@ fn authenticate(req: &ServiceRequest) -> Result<(), Error> {
         if let Ok(auth_str) = auth_header.to_str() {
             // Check if it's a Bearer token
             if auth_str.starts_with("Bearer ") {
+                // Validate token length before slicing
+                if auth_str.len() <= 7 {
+                    warn!("Bearer token is empty");
+                    return Err(ErrorUnauthorized("Bearer token is empty"));
+                }
+                
                 let token = &auth_str[7..]; // Skip "Bearer " prefix
-                debug!("Request received with token: {}", token);
+                debug!("Request received with token: [REDACTED]");
 
                 // Validate the token
                 return validate_token(token);
@@ -129,9 +135,28 @@ fn authenticate(req: &ServiceRequest) -> Result<(), Error> {
 }
 /// Validates a token for authentication
 ///
-/// Currently just returns Ok for any token, but can be extended
+/// Currently implements basic validation, but can be extended
 /// to implement real token validation in the future.
-fn validate_token(_token: &str) -> Result<(), Error> {
-    // TODO: Implement proper token validation
+fn validate_token(token: &str) -> Result<(), Error> {
+    // Basic token validation
+    if token.is_empty() {
+        warn!("Empty token provided");
+        return Err(ErrorUnauthorized("Empty token"));
+    }
+    
+    // Check token length (basic validation)
+    if token.len() < 8 {
+        warn!("Token too short: {} characters", token.len());
+        return Err(ErrorUnauthorized("Invalid token"));
+    }
+    
+    // Check for reasonable token format (alphanumeric with some special chars)
+    if !token.chars().any(|c| c.is_alphanumeric()) {
+        warn!("Token contains no alphanumeric characters");
+        return Err(ErrorUnauthorized("Invalid token format"));
+    }
+    
+    // TODO: Implement proper token validation (JWT, database lookup, etc.)
+    debug!("Token validation passed basic checks");
     Ok(())
 }

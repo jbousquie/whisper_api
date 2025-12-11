@@ -1,7 +1,7 @@
 use actix_web::{middleware::Logger, web, App, HttpServer};
 use chrono::Local;
 use env_logger::{Builder, Env};
-use log::{debug, info, warn};
+use log::{debug, info, warn, error};
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -59,17 +59,40 @@ async fn main() -> std::io::Result<()> {
     let tmp_dir = &handler_config.temp_dir;
     info!("Cleaning temporary directory: {}", tmp_dir);
 
+    // Validate tmp directory path before operations
+    let tmp_path = Path::new(tmp_dir);
+    if tmp_path.has_root() && !tmp_path.starts_with("/") && !tmp_path.starts_with("C:") {
+        error!("Invalid temporary directory path: {}", tmp_dir);
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("Invalid temporary directory path: {}", tmp_dir)
+        ));
+    }
+
     // Delete existing temporary directory if it exists
-    if Path::new(tmp_dir).exists() {
-        match fs::remove_dir_all(tmp_dir) {
+    if tmp_path.exists() {
+        // Additional safety check - don't delete system directories
+        if tmp_path == Path::new("/") || tmp_path == Path::new("C:\\") {
+            error!("Refusing to delete system root directory: {}", tmp_dir);
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!("Refusing to delete system directory: {}", tmp_dir)
+            ));
+        }
+        
+        match fs::remove_dir_all(tmp_path) {
             Ok(_) => info!("Successfully removed old temporary directory"),
-            Err(e) => warn!("Failed to remove temporary directory {}: {}", tmp_dir, e),
+            Err(e) => {
+                warn!("Failed to remove temporary directory {}: {}", tmp_dir, e);
+                // Continue anyway, we'll try to create it
+            }
         }
     }
 
-    // Create fresh tmp directory
-    if let Err(e) = fs::create_dir_all(tmp_dir) {
-        warn!("Failed to create temp directory {}: {}", tmp_dir, e);
+    // Create fresh tmp directory with proper permissions
+    if let Err(e) = fs::create_dir_all(tmp_path) {
+        error!("Failed to create temp directory {}: {}", tmp_dir, e);
+        return Err(e);
     } else {
         info!("Created fresh temporary directory: {}", tmp_dir);
     }

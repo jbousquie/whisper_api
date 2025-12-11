@@ -133,6 +133,25 @@ pub async fn extract_form_data(
                 };
             }
             "file" => {
+                // Validate content type before processing
+                let content_type = field.content_type().map(|ct| ct.to_string());
+                
+                // Check if this is an audio file based on content type
+                let is_audio_file = content_type.as_ref().map_or(false, |ct| {
+                    ct.starts_with("audio/") || 
+                    ct.ends_with("/wav") || 
+                    ct.ends_with("/mp3") || 
+                    ct.ends_with("/ogg") ||
+                    ct.ends_with("/flac")
+                });
+                
+                if !is_audio_file {
+                    warn!("Rejected non-audio file with content type: {:?}", content_type);
+                    return Err(HandlerError::form_error(
+                        format!("Invalid file type. Expected audio file, got: {:?}", content_type)
+                    ));
+                }
+
                 // Generate a unique folder and filename for the audio file
                 let paths = generate_unique_job_paths(&config.temp_dir, "whisper", "audio")
                     .map_err(|e| {
@@ -151,32 +170,54 @@ pub async fn extract_form_data(
 
                 while let Some(chunk) = field.next().await {
                     let data = chunk.map_err(|e| {
-                        HandlerError::form_error(format!("Error processing file upload: {}", e))
-                            .with_cleanup(Some(&paths.folder))
+                        let mut error = HandlerError::form_error(format!("Error processing file upload: {}", e));
+                        error = error.with_cleanup(Some(&paths.folder));
+                        error
                     })?;
 
                     // Check file size limits
                     let max_file_size = get_max_file_size();
                     total_size += data.len();
                     if total_size > max_file_size {
-                        return Err(HandlerError::FileTooLarge(total_size, max_file_size)
-                            .with_cleanup(Some(&paths.folder)));
+                        let mut error = HandlerError::FileTooLarge(total_size, max_file_size);
+                        error = error.with_cleanup(Some(&paths.folder));
+                        return Err(error);
                     }
 
                     file_data.extend_from_slice(&data);
                 }
 
+                // Validate we received some data
+                if file_data.is_empty() {
+                    let mut error = HandlerError::form_error("Uploaded file is empty");
+                    error = error.with_cleanup(Some(&paths.folder));
+                    return Err(error);
+                }
+
                 // Save the file data
                 save_file_data(&file_data, &paths.audio_file)
-                    .map_err(|e| HandlerError::FileError(e).with_cleanup(Some(&paths.folder)))?;
+                    .map_err(|e| {
+                        let mut error = HandlerError::FileError(e);
+                        error = error.with_cleanup(Some(&paths.folder));
+                        error
+                    })?;
 
-                info!("Saved audio file: {}", paths.audio_file.display());
+                info!("Saved audio file: {} (content-type: {:?})", paths.audio_file.display(), content_type);
             }
             _ => {
                 // Skip unknown fields
                 while let Some(_) = field.next().await {}
             }
         }
+    }
+
+    // Validate the parameters before continuing
+    if let Err(e) = params.validate() {
+        let mut error = HandlerError::form_error(format!("Parameter validation failed: {}", e));
+        if let Some(paths) = &job_paths {
+            error = error.with_cleanup(Some(&paths.folder));
+        }
+        return Err(error);
     }
 
     // Ensure we have all required data

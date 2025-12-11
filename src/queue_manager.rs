@@ -597,6 +597,24 @@ impl QueueManager {
         // Store audio file path for cleanup at the end
         let audio_file_path = job.audio_file.clone();
 
+        // Validate that the audio file exists before processing
+        if !audio_file_path.exists() {
+            warn!("Audio file does not exist: {}", audio_file_path.display());
+            return Err(QueueError::TranscriptionError(format!(
+                "Audio file not found: {}",
+                audio_file_path.display()
+            )));
+        }
+
+        // Validate that the audio file is readable
+        if let Err(e) = fs::metadata(&audio_file_path) {
+            warn!("Cannot access audio file {}: {}", audio_file_path.display(), e);
+            return Err(QueueError::TranscriptionError(format!(
+                "Cannot access audio file: {}",
+                e
+            )));
+        }
+
         // Validate output format if provided
         // This determines the output file format (e.g., srt, vtt, txt, json)
         let output_format = match &job.output_format {
@@ -606,6 +624,36 @@ impl QueueManager {
             }
             None => &config.output_format,
         };
+
+        // Validate command path before creating command
+        if !Path::new(&config.command_path).exists() {
+            warn!("WhisperX command not found: {}", config.command_path);
+            return Err(QueueError::TranscriptionError(format!(
+                "WhisperX command not found: {}",
+                config.command_path
+            )));
+        }
+
+        // Validate models directory
+        let model_path = Path::new(&config.models_dir).join(&job.model);
+        if !model_path.exists() {
+            warn!("Model directory not found: {}", model_path.display());
+            return Err(QueueError::TranscriptionError(format!(
+                "Model directory not found: {}",
+                model_path.display()
+            )));
+        }
+
+        // Validate output directory
+        if !Path::new(&config.output_dir).exists() {
+            if let Err(e) = fs::create_dir_all(&config.output_dir) {
+                warn!("Cannot create output directory {}: {}", config.output_dir, e);
+                return Err(QueueError::TranscriptionError(format!(
+                    "Cannot create output directory: {}",
+                    e
+                )));
+            }
+        }
 
         // Execute whisper command
         let mut command = Command::new(&config.command_path);
@@ -669,11 +717,28 @@ impl QueueManager {
         let output_file_path_clone = output_file_path.clone();
 
         // Execute the command with retry logic
-        let output = execute_command_with_retry(command, &audio_file_path).await?;
+        let output = match execute_command_with_retry(command, &audio_file_path).await {
+            Ok(output) => output,
+            Err(e) => {
+                warn!("Command execution failed after retries: {}", e);
+                return Err(e);
+            }
+        };
 
         if !output.status.success() {
-            let error = String::from_utf8_lossy(&output.stderr).to_string();
-
+            // Try to get stderr as UTF-8, fall back to lossy conversion if needed
+            let error = match String::from_utf8(output.stderr.clone()) {
+                Ok(stderr_str) => stderr_str,
+                Err(e) => {
+                    warn!("Non-UTF8 stderr output: {}", e);
+                    String::from_utf8_lossy(&output.stderr).to_string()
+                }
+            };
+            
+            warn!("Command failed with exit code {}: {}", 
+                 output.status.code().unwrap_or(-1), 
+                 error);
+            
             // Attempt to clean up audio file on command failure
             if let Err(err) = fs::remove_file(&audio_file_path) {
                 warn!(

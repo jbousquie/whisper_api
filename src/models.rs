@@ -43,6 +43,42 @@ pub struct TranscriptionParams {
     pub device_index: Option<String>,
 }
 
+impl TranscriptionParams {
+    /// Validates the parameters and returns an error if any are invalid
+    pub fn validate(&self) -> Result<(), String> {
+        // Validate language code (should be 2-3 characters)
+        if !self.language.is_empty() && (self.language.len() < 2 || self.language.len() > 3) {
+            return Err(format!("Invalid language code: {}", self.language));
+        }
+        
+        // Validate model name (should not be empty)
+        if self.model.is_empty() {
+            return Err("Model name cannot be empty".to_string());
+        }
+        
+        // Validate prompt length
+        if self.prompt.len() > 1000 {
+            return Err("Prompt is too long (max 1000 characters)".to_string());
+        }
+        
+        // Validate device if provided
+        if let Some(device) = &self.device {
+            if device != "cuda" && device != "cpu" {
+                return Err(format!("Invalid device: {}. Must be 'cuda' or 'cpu'", device));
+            }
+        }
+        
+        // Validate device index if provided
+        if let Some(device_index) = &self.device_index {
+            if device_index.parse::<i32>().is_err() {
+                return Err(format!("Invalid device index: {}", device_index));
+            }
+        }
+        
+        Ok(())
+    }
+}
+
 /// Error response for API
 #[derive(Serialize)]
 pub struct ErrorResponse {

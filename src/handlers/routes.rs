@@ -11,6 +11,7 @@ use std::env;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{oneshot, Mutex};
+use tokio::time;
 
 use crate::config::HandlerConfig;
 use crate::error::HandlerError;
@@ -76,14 +77,30 @@ pub async fn transcribe(
     }
 
     // Standard asynchronous mode processing
-    // Add job to queue
-    {
-        let queue_manager = queue_manager.lock().await;
-        queue_manager.add_job(job).await.map_err(|e| {
-            error!("Failed to add job to queue: {}", e);
-            HandlerError::from(e).with_cleanup(params.folder_path.as_ref())
-        })?;
-    }
+    // Add job to queue with timeout to prevent deadlocks
+    let queue_manager_lock_result = time::timeout(
+        Duration::from_secs(30),
+        queue_manager.lock()
+    ).await;
+    
+    let queue_manager = match queue_manager_lock_result {
+        Ok(guard) => guard,
+        Err(_) => {
+            error!("Timeout acquiring queue manager lock for job {}", job_paths.id);
+            let mut error = HandlerError::QueueError(
+                "Service temporarily unavailable - please try again".to_string()
+            );
+            error = error.with_cleanup(params.folder_path.as_ref());
+            return Err(error);
+        }
+    };
+    
+    queue_manager.add_job(job).await.map_err(|e| {
+        error!("Failed to add job to queue: {}", e);
+        let mut error = HandlerError::from(e);
+        error = error.with_cleanup(params.folder_path.as_ref());
+        error
+    })?;
 
     // Generate status URL for client to check progress
     let status_url = format!("/transcription/{}", job_paths.id);
